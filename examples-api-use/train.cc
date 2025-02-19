@@ -156,7 +156,20 @@ int main(int argc, char *argv[]) {
     offscreen->Fill(bg_color.r, bg_color.g, bg_color.b);
 
     int line_offset = 0;
-    strncpy(text_buffer, "Hello Freddy!", 256);
+    strncpy(text_buffer, "1st 14:03 London Liverpool Street", 256);
+    if (outline_font) {
+    rgb_matrix::DrawText(offscreen, *outline_font,
+                            x - 1, y + font.baseline() + line_offset,
+                            outline_color, NULL, text_buffer,
+                            letter_spacing - 2);
+    }
+    rgb_matrix::DrawText(offscreen, font,
+                        x, y + font.baseline() + line_offset,
+                        color, NULL, text_buffer,
+                        letter_spacing);
+    line_offset += font.height() + line_spacing;
+
+    strncpy(text_buffer, "2nd 14:18 London Liverpool Street", 256);
     if (outline_font) {
     rgb_matrix::DrawText(offscreen, *outline_font,
                             x - 1, y + font.baseline() + line_offset,
