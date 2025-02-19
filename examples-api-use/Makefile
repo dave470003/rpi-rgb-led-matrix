@@ -31,6 +31,7 @@ scrolling-text-example : scrolling-text-example.o
 clock : clock.o
 ledcat : ledcat.o
 pixel-mover : pixel-mover.o
+train : train.o
 
 # All the binaries that have the same name as the object file.q
 % : %.o $(RGB_LIBRARY)
