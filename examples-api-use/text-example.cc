@@ -138,7 +138,6 @@ int main(int argc, char *argv[]) {
   const int x = x_orig;
   int y = y_orig;
 
-  printf(flood_color.r, flood_color.g, flood_color.b);
   if (isatty(STDIN_FILENO)) {
     // Only give a message if we are interactive. If connected via pipe, be quiet
     printf("Enter lines. Full screen or empty line clears screen.\n"
@@ -146,7 +145,7 @@ int main(int argc, char *argv[]) {
   }
 
   canvas->Fill(flood_color.r, flood_color.g, flood_color.b);
-  return 0;
+
   char line[1024];
   while (fgets(line, sizeof(line), stdin)) {
     const size_t last = strlen(line);
