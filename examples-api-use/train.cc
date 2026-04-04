@@ -143,7 +143,7 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
 
-  int speed = 1;
+  int speed = 50;
   int delay_speed_usec = 1000000;
   if (speed > 0) {
     delay_speed_usec = 1000000 / speed / font.CharacterWidth('W');
@@ -194,6 +194,7 @@ int main(int argc, char *argv[]) {
 
     // Atomic swap with double buffer
     offscreen = matrix->SwapOnVSync(offscreen);
+    usleep(delay_speed_usec);
   }
 
   // Finished. Shut down the RGB matrix.
