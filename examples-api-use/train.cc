@@ -143,7 +143,7 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
 
-  int speed = 50;
+  int speed = 1;
   int delay_speed_usec = 1000000;
   if (speed > 0) {
     delay_speed_usec = 1000000 / speed / font.CharacterWidth('W');
@@ -174,7 +174,7 @@ int main(int argc, char *argv[]) {
     // offscreen_canvas_middle->Fill(bg_color.r, bg_color.g, bg_color.b);
     // length = holds how many pixels our text takes up
     middle_length = rgb_matrix::DrawText(offscreen, font,
-                                  x_mid, y + font.baseline(),
+                                  x_mid, y + font.baseline() + line_offset,
                                   color, nullptr,
                                   line.c_str(), letter_spacing);
 
