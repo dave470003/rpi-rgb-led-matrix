@@ -169,7 +169,7 @@ int main(int argc, char *argv[]) {
                         letter_spacing);
     line_offset += font.height() + line_spacing;
 
-    line = "This train is formed of 4 carriages.";
+    line = "This train is formed of 4 carriages. Calling at: Horsforth, Longlevens, Elmore Court, Tottenham, Monaco and the Moon. Doesn't stop at Leeds.";
 
     // offscreen_canvas_middle->Fill(bg_color.r, bg_color.g, bg_color.b);
     // length = holds how many pixels our text takes up
