@@ -14,6 +14,15 @@
 
 using namespace rgb_matrix;
 
+// create objectData class. holds two text fields and twod atetime fields.
+class ObjectData {
+public:
+  std::string destination;
+  std::string description;
+  time_t scheduled_time;
+  time_t estimated_time;
+};
+
 volatile bool interrupt_received = false;
 static void InterruptHandler(int signo) {
   interrupt_received = true;
@@ -41,6 +50,7 @@ static bool FullSaturation(const Color &c) {
  */
 
 static int usage(const char *progname) {
+  fprintf(stderr, "Hello if you're using this! I recommend you use the following options: --led-no-hardware-pulse --led-no-hardware-pulse --led-gpio-mapping=adafruit-hat examples-api-use/runtext.ppm --led-cols=192 --led-slowdown-gpio=2", progname);
   fprintf(stderr, "usage: %s [options]\n", progname);
   fprintf(stderr, "Reads text from stdin and displays it. "
           "Empty string: clear screen\n");
@@ -161,40 +171,79 @@ int main(int argc, char *argv[]) {
   // add a string variable called 'line'
   std::string line;
 
+  // an array of object data
+  std::vector<ObjectData> objects;
+
+  // push a new objectData to objects
+  objects.push_back(ObjectData{"Leeds", "This train is formed of 4 carriages. Calling at: Horsforth, Longlevens, Elmore Court, Tottenham, Monaco and the Moon. Doesn't stop at Leeds.", time(nullptr), time(nullptr)});
+
+  // sort objects by scheduled time
+  std::sort(objects.begin(), objects.end(), [](const ObjectData& a, const ObjectData& b) {
+    return a.scheduled_time < b.scheduled_time;
+  });
+
   while (!interrupt_received) {
     offscreen->Fill(bg_color.r, bg_color.g, bg_color.b);
 
     int line_offset = 0;
-    strncpy(text_buffer, "1st 14:03 Leeds               Exp 14:05", 192);
 
-    rgb_matrix::DrawText(offscreen, font,
-                        x, y + font.baseline() + line_offset,
-                        color, NULL, text_buffer,
-                        letter_spacing);
-    line_offset += font.height() + line_spacing;
+    // if objects has at least one object, grab the first one
+    if (!objects.empty()) {
 
-    line = "This train is formed of 4 carriages. Calling at: Horsforth, Longlevens, Elmore Court, Tottenham, Monaco and the Moon. Doesn't stop at Leeds.";
+      std::string text = "1st 14:03 " + objects[0].destination + "               Exp 14:05";
+      strncpy(text_buffer, text.c_str(), 192);
 
-    // offscreen_canvas_middle->Fill(bg_color.r, bg_color.g, bg_color.b);
-    // length = holds how many pixels our text takes up
-    middle_length = rgb_matrix::DrawText(offscreen, font,
-                                  x_mid, y + font.baseline() + line_offset,
-                                  color, nullptr,
-                                  line.c_str(), letter_spacing);
+      rgb_matrix::DrawText(offscreen, font,
+                          x, y + font.baseline() + line_offset,
+                          color, NULL, text_buffer,
+                          letter_spacing);
+      line_offset += font.height() + line_spacing;
 
-    line_offset += font.height() + line_spacing;
+      line = objects[0].description;
 
-    if (speed > 0 && --x_mid + middle_length < 0) {
-      x_mid = x_mid_orig;
+      // offscreen_canvas_middle->Fill(bg_color.r, bg_color.g, bg_color.b);
+      // length = holds how many pixels our text takes up
+      middle_length = rgb_matrix::DrawText(offscreen, font,
+                                    x_mid, y + font.baseline() + line_offset,
+                                    color, nullptr,
+                                    line.c_str(), letter_spacing);
+
+      line_offset += font.height() + line_spacing;
+
+      if (speed > 0 && --x_mid + middle_length < 0) {
+        x_mid = x_mid_orig;
+      }
+
+      // if there's a second object, grab it
+      if (objects.size() > 1) {
+        std::string text = "2nd 14:18 " + objects[1].destination + "               On Time";
+        strncpy(text_buffer, text.c_str(), 192);
+
+        rgb_matrix::DrawText(offscreen, font,
+                            x, y + font.baseline() + line_offset,
+                            color, NULL, text_buffer,
+                            letter_spacing);
+        line_offset += font.height() + line_spacing;
+      } else {
+        // display the current time
+        time_t now = time(nullptr);
+        strftime(text_buffer, sizeof(text_buffer), "%H:%M:%S", localtime(&now));
+        rgb_matrix::DrawText(offscreen, font,
+                            x, y + font.baseline() + line_offset,
+                            color, NULL, text_buffer,
+                            letter_spacing);
+        line_offset += font.height() + line_spacing;
+      }
+    } else {
+      // display the current time
+      time_t now = time(nullptr);
+      strftime(text_buffer, sizeof(text_buffer), "%H:%M:%S", localtime(&now));
+      rgb_matrix::DrawText(offscreen, font,
+                          x, y + font.baseline() + line_offset,
+                          color, NULL, text_buffer,
+                          letter_spacing);
+      line_offset += font.height() + line_spacing;
     }
-
-    strncpy(text_buffer, "2nd 14:18 Leeds                On Time", 192);
-
-    rgb_matrix::DrawText(offscreen, font,
-                        x, y + font.baseline() + line_offset,
-                        color, NULL, text_buffer,
-                        letter_spacing);
-    line_offset += font.height() + line_spacing;
 
     // Atomic swap with double buffer
     offscreen = matrix->SwapOnVSync(offscreen);
