@@ -143,16 +143,20 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
 
-  int speed = 5;
+  /* x_origin is set by default just right of the screen */
+  const int x_mid_default_start = (matrix_options.chain_length
+    * matrix_options.cols) + 5;
+  int x_mid_orig = x_mid_default_start;
+  int speed = 7;
   int delay_speed_usec = 1000000;
   if (speed > 0) {
     delay_speed_usec = 1000000 / speed / font.CharacterWidth('W');
-  } else {
+  } else if (x_mid_orig == x_mid_default_start) {
     // There would be no scrolling, so text would never appear. Move to front.
-    x_orig = 0;
+    x_mid_orig = 0;
   }
 
-  int x_mid = x_orig;
+  int x_mid = x_mid_orig;
   int middle_length = 0;
   // add a string variable called 'line'
   std::string line;
@@ -181,7 +185,7 @@ int main(int argc, char *argv[]) {
     line_offset += font.height() + line_spacing;
 
     if (speed > 0 && --x_mid + middle_length < 0) {
-      x_mid = x_orig;
+      x_mid = x_mid_orig;
     }
 
     strncpy(text_buffer, "2nd 14:18 Leeds                On Time", 192);
