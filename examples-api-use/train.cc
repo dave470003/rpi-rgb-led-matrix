@@ -11,6 +11,7 @@
 
 #include <vector>
 #include <string>
+#include <algorithm>
 
 using namespace rgb_matrix;
 
