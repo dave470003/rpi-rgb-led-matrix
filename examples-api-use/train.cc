@@ -55,7 +55,6 @@ static int usage(const char *progname) {
           "\t-S <spacing>      : Extra spacing between letters (Default: 0)\n"
           "\t-C <r,g,b>        : Color. Default 255,255,0\n"
           "\t-B <r,g,b>        : Background-Color. Default 0,0,0\n"
-          "\t-O <r,g,b>        : Outline-Color, e.g. to increase contrast.\n"
           "\n"
           );
   rgb_matrix::PrintMatrixFlags(stderr);
@@ -101,13 +100,6 @@ int main(int argc, char *argv[]) {
         return usage(argv[0]);
       }
       break;
-    case 'O':
-      if (!parseColor(&outline_color, optarg)) {
-        fprintf(stderr, "Invalid outline color spec: %s\n", optarg);
-        return usage(argv[0]);
-      }
-      with_outline = true;
-      break;
     default:
       return usage(argv[0]);
     }
@@ -126,10 +118,6 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Couldn't load font '%s'\n", bdf_font_file);
     return 1;
   }
-  rgb_matrix::Font *outline_font = NULL;
-  if (with_outline) {
-    outline_font = font.CreateOutlineFont();
-  }
 
   RGBMatrix *matrix = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL)
@@ -147,48 +135,63 @@ int main(int argc, char *argv[]) {
 
   FrameCanvas *offscreen = matrix->CreateFrameCanvas();
 
+  // Create a new canvas to be used with led_matrix_swap_on_vsync
+  // FrameCanvas *offscreen_canvas_middle = matrix->CreateFrameCanvas();
+
   char text_buffer[256];
 
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
 
+  int speed = 50;
+  int delay_speed_usec = 1000000;
+  if (speed > 0) {
+    delay_speed_usec = 1000000 / speed / font.CharacterWidth('W');
+  } else {
+    // There would be no scrolling, so text would never appear. Move to front.
+    x_orig = 0;
+  }
+
+  int x_mid = x_orig;
+  int middle_length = 0;
+  // add a string variable called 'line'
+  std::string line;
+
   while (!interrupt_received) {
     offscreen->Fill(bg_color.r, bg_color.g, bg_color.b);
 
     int line_offset = 0;
-    strncpy(text_buffer, "1st 14:03 Leeds                 Exp 14:05", 192);
-    if (outline_font) {
-    rgb_matrix::DrawText(offscreen, *outline_font,
-                            x - 1, y + font.baseline() + line_offset,
-                            outline_color, NULL, text_buffer,
-                            letter_spacing - 2);
-    }
+    strncpy(text_buffer, "1st 14:03 Leeds               Exp 14:05", 192);
+
     rgb_matrix::DrawText(offscreen, font,
                         x, y + font.baseline() + line_offset,
                         color, NULL, text_buffer,
                         letter_spacing);
     line_offset += font.height() + line_spacing;
 
-    strncpy(text_buffer, "This train is formed of 4 carriages.", 192);
-    if (outline_font) {
-    rgb_matrix::DrawText(offscreen, *outline_font,
-                            x - 1, y + font.baseline() + line_offset,
-                            outline_color, NULL, text_buffer,
-                            letter_spacing - 2);
+    line = "This train is formed of 4 carriages.";
+
+    // offscreen_canvas_middle->Fill(bg_color.r, bg_color.g, bg_color.b);
+    // length = holds how many pixels our text takes up
+    middle_length = rgb_matrix::DrawText(offscreen, font,
+                                  x, y + font.baseline(),
+                                  color, nullptr,
+                                  line.c_str(), letter_spacing);
+
+    line_offset += font.height() + line_spacing;
+
+    if (speed > 0 && --x_mid + middle_length < 0) {
+      x_mid = x_orig;
     }
+
     rgb_matrix::DrawText(offscreen, font,
                         x, y + font.baseline() + line_offset,
                         color, NULL, text_buffer,
                         letter_spacing);
     line_offset += font.height() + line_spacing;
 
-    strncpy(text_buffer, "2nd 14:18 Leeds                  On Time", 192);
-    if (outline_font) {
-    rgb_matrix::DrawText(offscreen, *outline_font,
-                            x - 1, y + font.baseline() + line_offset,
-                            outline_color, NULL, text_buffer,
-                            letter_spacing - 2);
-    }
+    strncpy(text_buffer, "2nd 14:18 Leeds                On Time", 192);
+
     rgb_matrix::DrawText(offscreen, font,
                         x, y + font.baseline() + line_offset,
                         color, NULL, text_buffer,
