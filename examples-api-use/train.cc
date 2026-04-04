@@ -51,7 +51,7 @@ static bool FullSaturation(const Color &c) {
  */
 
 static int usage(const char *progname) {
-  fprintf(stderr, "Hello if you're using this! I recommend you use the following options: --led-no-hardware-pulse --led-no-hardware-pulse --led-gpio-mapping=adafruit-hat examples-api-use/runtext.ppm --led-cols=192 --led-slowdown-gpio=2", progname);
+  fprintf(stderr, "Hello if you're using this! I recommend you use the following options: --led-no-hardware-pulse --led-no-hardware-pulse --led-gpio-mapping=adafruit-hat examples-api-use/runtext.ppm --led-cols=192 --led-slowdown-gpio=2\n");
   fprintf(stderr, "usage: %s [options]\n", progname);
   fprintf(stderr, "Reads text from stdin and displays it. "
           "Empty string: clear screen\n");
