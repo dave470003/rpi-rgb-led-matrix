@@ -143,7 +143,7 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
 
-  int speed = 50;
+  int speed = 500;
   int delay_speed_usec = 1000000;
   if (speed > 0) {
     delay_speed_usec = 1000000 / speed / font.CharacterWidth('W');
