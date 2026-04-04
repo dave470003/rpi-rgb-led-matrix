@@ -174,7 +174,7 @@ int main(int argc, char *argv[]) {
     // offscreen_canvas_middle->Fill(bg_color.r, bg_color.g, bg_color.b);
     // length = holds how many pixels our text takes up
     middle_length = rgb_matrix::DrawText(offscreen, font,
-                                  x, y + font.baseline(),
+                                  x_mid, y + font.baseline(),
                                   color, nullptr,
                                   line.c_str(), letter_spacing);
 
@@ -183,12 +183,6 @@ int main(int argc, char *argv[]) {
     if (speed > 0 && --x_mid + middle_length < 0) {
       x_mid = x_orig;
     }
-
-    rgb_matrix::DrawText(offscreen, font,
-                        x, y + font.baseline() + line_offset,
-                        color, NULL, text_buffer,
-                        letter_spacing);
-    line_offset += font.height() + line_spacing;
 
     strncpy(text_buffer, "2nd 14:18 Leeds                On Time", 192);
 
