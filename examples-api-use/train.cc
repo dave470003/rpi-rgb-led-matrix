@@ -286,7 +286,7 @@ int main(int argc, char *argv[]) {
   // now = mktime(&now_tm);
 
   objects.erase(std::remove_if(objects.begin(), objects.end(), [now](const ObjectData& object) {
-    return object.estimated_time > now;
+    return object.estimated_time < now;
   }), objects.end());
 
   while (!interrupt_received) {
