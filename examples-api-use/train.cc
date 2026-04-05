@@ -211,7 +211,7 @@ int main(int argc, char *argv[]) {
   json slideshow = root.value("slideshow", json::array());
   json gifs = root.value("gifs", json::array());
   json comments = root.value("comments", json::array());
-  std::string important_message = root.value("important_message", "");
+  std::string important_message = root.value("importantMessage", "");
   std::string mode = root.value("mode", "");
   json secrets = root.value("secrets", json::array());
 
