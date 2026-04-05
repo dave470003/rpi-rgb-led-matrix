@@ -88,7 +88,7 @@ json pull_from_api() {
   CURL* curl = curl_easy_init();
 
   if (curl) {
-      std::string url = "http://freddyanddavid.com/api/config";
+      std::string url = "https://freddyanddavid.com/api/config";
       curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
       curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
       curl_easy_setopt(curl, CURLOPT_WRITEDATA, &json_string);
