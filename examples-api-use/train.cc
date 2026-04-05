@@ -201,6 +201,11 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
 
+  auto get_string_or_empty = [](const json& j, const std::string& key) -> std::string {
+    if (j.contains(key) && !j[key].is_null()) return j[key].get<std::string>();
+    return "";
+  };
+
   // Pull JSON from API
   json root = pull_from_api();
 
@@ -211,8 +216,8 @@ int main(int argc, char *argv[]) {
   json slideshow = root.value("slideshow", json::array());
   json gifs = root.value("gifs", json::array());
   json comments = root.value("comments", json::array());
-  std::string important_message = root.value("importantMessage", "");
-  std::string mode = root.value("mode", "");
+  std::string important_message = get_string_or_empty(root, "importantMessage");
+  std::string mode = get_string_or_empty(root, "mode");
   json secrets = root.value("secrets", json::array());
 
   // Convert events to ObjectData vector
