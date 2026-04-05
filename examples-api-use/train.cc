@@ -277,13 +277,13 @@ int main(int argc, char *argv[]) {
   // filter objects that have an estimated time in the future from a given date
   // set the given date as 2026-09-05 14:20
   time_t now = time(nullptr);
-  struct tm now_tm = *localtime(&now);
-  now_tm.tm_year = 2026 - 1900;
-  now_tm.tm_mon = 9 - 1;
-  now_tm.tm_mday = 5;
-  now_tm.tm_hour = 13;
-  now_tm.tm_min = 20;
-  now = mktime(&now_tm);
+  // struct tm now_tm = *localtime(&now);
+  // now_tm.tm_year = 2026 - 1900;
+  // now_tm.tm_mon = 9 - 1;
+  // now_tm.tm_mday = 5;
+  // now_tm.tm_hour = 13;
+  // now_tm.tm_min = 20;
+  // now = mktime(&now_tm);
 
   objects.erase(std::remove_if(objects.begin(), objects.end(), [now](const ObjectData& object) {
     return object.estimated_time > now;
