@@ -13,6 +13,7 @@
 #include <string>
 #include <algorithm>
 #include <curl/curl.h>
+#include <iostream>
 #include <nlohmann/json.hpp>
 
 using namespace rgb_matrix;
@@ -40,6 +41,11 @@ static bool FullSaturation(const Color &c) {
   return (c.r == 0 || c.r == 255)
     && (c.g == 0 || c.g == 255)
     && (c.b == 0 || c.b == 255);
+}
+
+size_t WriteMemoryCallback(void* contents, size_t size, size_t nmemb, void* userp) {
+  ((std::string*)userp)->append((char*)contents, size * nmemb);
+  return size * nmemb;
 }
 
 /**
