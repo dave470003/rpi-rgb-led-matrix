@@ -74,6 +74,38 @@ static int usage(const char *progname) {
   return 1;
 }
 
+// create a new function called "pull_from_api"
+json pull_from_api() {
+  std::string json_string;
+  curl_global_init(CURL_GLOBAL_DEFAULT);
+  CURL* curl = curl_easy_init();
+
+  if (curl) {
+      std::string url = "http://freddyanddavid.com/api/config";
+      curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &json_string);
+
+      CURLcode res = curl_easy_perform(curl);
+      if (res != CURLE_OK) {
+          std::cerr << "cURL error: " << curl_easy_strerror(res) << std::endl;
+      }
+
+      curl_easy_cleanup(curl);
+  }
+  curl_global_cleanup();
+
+  // Parse JSON
+  json root;
+  try {
+      root = json::parse(json_string);
+  } catch (json::parse_error& e) {
+      std::cerr << "Failed to parse JSON: " << e.what() << std::endl;
+  }
+
+  return root;
+}
+
 int main(int argc, char *argv[]) {
   RGBMatrix::Options matrix_options;
   rgb_matrix::RuntimeOptions runtime_opt;
@@ -161,49 +193,6 @@ int main(int argc, char *argv[]) {
 
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
-
-  Json::Value jokes;
-  Json::Value affirmations;
-  Json::Value events;
-  Json::Value slideshow;
-  Json::Value gif;
-  Json::Value secrets;
-  Json::Value jokes;
-
-  Json::Value root;
-  Json::Reader reader;
-
-  // create a new function called "pull_from_api"
-  json pull_from_api() {
-    std::string json_string;
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-    CURL* curl = curl_easy_init();
-
-    if (curl) {
-        std::string url = "http://freddyanddavid.com/api/config";
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &json_string);
-
-        CURLcode res = curl_easy_perform(curl);
-        if (res != CURLE_OK) {
-            std::cerr << "cURL error: " << curl_easy_strerror(res) << std::endl;
-        }
-
-        curl_easy_cleanup(curl);
-    }
-    curl_global_cleanup();
-
-    // Parse JSON
-    json root;
-    try {
-        root = json::parse(json_string);
-    } catch (json::parse_error& e) {
-        std::cerr << "Failed to parse JSON: " << e.what() << std::endl;
-    }
-
-    return root;
-  }
 
   // Pull JSON from API
   json root = pull_from_api();
