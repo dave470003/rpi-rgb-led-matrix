@@ -301,7 +301,7 @@ int main(int argc, char *argv[]) {
   now_tm.tm_year = 2026 - 1900;
   now_tm.tm_mon = 9 - 1;
   now_tm.tm_mday = 5;
-  now_tm.tm_hour = 14;
+  now_tm.tm_hour = 15;
   now_tm.tm_min = 25;
   now = mktime(&now_tm);
 
@@ -359,7 +359,7 @@ int main(int argc, char *argv[]) {
 
       // if there's a second object, grab it
       if (objects.size() > 1) {
-        std::string sch_text_1 = "2nd " + objects[0].get_scheduled_time();
+        std::string sch_text_1 = "2nd " + objects[1].get_scheduled_time();
         strncpy(text_buffer, sch_text_1.c_str(), 192);
 
         rgb_matrix::DrawText(offscreen, font,
@@ -367,7 +367,7 @@ int main(int argc, char *argv[]) {
                             color, NULL, text_buffer,
                             letter_spacing);
 
-        std::string dest_text_1 = objects[0].destination;
+        std::string dest_text_1 = objects[1].destination;
         strncpy(text_buffer, dest_text_1.c_str(), 192);
 
         rgb_matrix::DrawText(offscreen, font,
@@ -375,7 +375,7 @@ int main(int argc, char *argv[]) {
                             color, NULL, text_buffer,
                             letter_spacing);
 
-        std::string est_text_1 = "Exp " + objects[0].get_estimated_time();
+        std::string est_text_1 = "Exp " + objects[1].get_estimated_time();
         strncpy(text_buffer, est_text_1.c_str(), 192);
 
         rgb_matrix::DrawText(offscreen, font,
