@@ -12,6 +12,8 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <curl/curl.h>
+#include <json.hpp>
 
 using namespace rgb_matrix;
 
@@ -130,6 +132,12 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  rgb_matrix::Font time_font;
+  if (!time_font.LoadFont("../fonts/dotbold.bdf")) {
+    fprintf(stderr, "Couldn't load font '%s'\n", bdf_font_file);
+    return 1;
+  }
+
   RGBMatrix *matrix = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL)
     return 1;
@@ -154,6 +162,94 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
 
+  Json::Value jokes;
+  Json::Value affirmations;
+  Json::Value events;
+  Json::Value slideshow;
+  Json::Value gif;
+  Json::Value secrets;
+  Json::Value jokes;
+
+  Json::Value root;
+  Json::Reader reader;
+
+  // create a new function called "pull_from_api"
+  pull_from_api() {
+
+    // Pull a json file from a url: freddyanddavid.com/api/config
+    std::string json_string;
+    size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp) {
+        ((std::string*)userp)->append((char*)contents, size * nmemb);
+        return size * nmemb;
+    }
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    CURL *curl;
+    CURLcode res;
+    std::string url = "http://freddyanddavid.com/api/config";
+    curl = curl_easy_init();
+    if(curl) {
+      curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &json_string);
+      res = curl_easy_perform(curl);
+      if(res != CURLE_OK) {
+        fprintf(stderr, "cURL error: %s\n", curl_easy_strerror(res));
+      }
+    }
+    curl_easy_cleanup(curl);
+    curl_global_cleanup();
+
+    // parse the json file
+    if (!reader.parse(json_string, root)) {
+      fprintf(stderr, "Failed to parse JSON\n");
+      return 1;
+    }
+
+    // get the "jokes" array
+    jokes = root["jokes"];
+
+    // get the "affirmations" array
+    affirmations = root["affirmations"];
+
+    // get the "events" array of objects
+    events = root["events"];
+
+    // get the "slideshow" array
+    slideshow = root["slideshow"];
+
+    // get the "gifs" array
+    gifs = root["gifs"];
+
+    // get the "comments" array
+    comments = root["comments"];
+
+    // get the "important message" string
+    important_message = root["important_message"];
+
+    // get the mode
+    mode = root["mode"];
+
+    // get the secret messages
+    secrets = root["secrets"];
+  }
+
+  pull_from_api();
+
+  // Create an array of ObjectData called event_objects
+  std::vector<ObjectData> objects;
+
+  // Create a new ObjectData object from each entry in the events array
+  for (int i = 0; i < events.size(); i++) {
+    Json::Value event = events[i];
+    ObjectData object;
+    object.destination = event["destination"].asString();
+    object.description = event["description"].asString();
+    object.scheduled_time = event["scheduled_time"].asInt();
+    object.estimated_time = event["estimated_time"].asInt();
+    objects.push_back(object);
+  }
+
+
   /* x_origin is set by default just right of the screen */
   const int x_mid_default_start = (matrix_options.chain_length
     * matrix_options.cols) + 5;
@@ -173,10 +269,10 @@ int main(int argc, char *argv[]) {
   std::string line;
 
   // an array of object data
-  std::vector<ObjectData> objects;
+  // std::vector<ObjectData> objects;
 
-  // push a new objectData to objects
-  objects.push_back(ObjectData{"Leeds", "This train is formed of 4 carriages. Calling at: Horsforth, Longlevens, Elmore Court, Tottenham, Monaco and the Moon. Doesn't stop at Leeds.", time(nullptr), time(nullptr)});
+  // // push a new objectData to objects
+  // objects.push_back(ObjectData{"Leeds", "This train is formed of 4 carriages. Calling at: Horsforth, Longlevens, Elmore Court, Tottenham, Monaco and the Moon. Doesn't stop at Leeds.", time(nullptr), time(nullptr)});
 
   // sort objects by scheduled time
   std::sort(objects.begin(), objects.end(), [](const ObjectData& a, const ObjectData& b) {
