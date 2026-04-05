@@ -28,17 +28,33 @@ public:
   time_t estimated_time;
 
 
-// need a function to return scheduled_time as a formatted string
+// need a function to return scheduled_time as a formatted string, based on the BST timezone
 std::string get_scheduled_time() {
   char buf[32];
-  strftime(buf, sizeof(buf), "%H:%M", localtime(&scheduled_time));
-  return buf;
+  struct tm tm_info;
+
+  // Force UK timezone (handles GMT/BST automatically)
+  setenv("TZ", "Europe/London", 1);
+  tzset();  // reload timezone info
+
+  localtime_r(&scheduled_time, &tm_info);
+  strftime(buf, sizeof(buf), "%H:%M", &tm_info);
+
+  return std::string(buf);
 }
 // need a function to return estimated_time as a formatted string
 std::string get_estimated_time() {
   char buf[32];
-  strftime(buf, sizeof(buf), "%H:%M", localtime(&estimated_time));
-  return buf;
+  struct tm tm_info;
+
+  // Force UK timezone (handles GMT/BST automatically)
+  setenv("TZ", "Europe/London", 1);
+  tzset();  // reload timezone info
+
+  localtime_r(&estimated_time, &tm_info);
+  strftime(buf, sizeof(buf), "%H:%M", &tm_info);
+
+  return std::string(buf);
 }
 };
 
@@ -276,14 +292,18 @@ int main(int argc, char *argv[]) {
 
   // filter objects that have an estimated time in the future from a given date
   // set the given date as 2026-09-05 14:20
+  // Force UK timezone (handles GMT/BST automatically)
+  setenv("TZ", "Europe/London", 1);
+  tzset();  // reload timezone info
+
   time_t now = time(nullptr);
-  // struct tm now_tm = *localtime(&now);
-  // now_tm.tm_year = 2026 - 1900;
-  // now_tm.tm_mon = 9 - 1;
-  // now_tm.tm_mday = 5;
-  // now_tm.tm_hour = 13;
-  // now_tm.tm_min = 20;
-  // now = mktime(&now_tm);
+  struct tm now_tm = *localtime(&now);
+  now_tm.tm_year = 2026 - 1900;
+  now_tm.tm_mon = 9 - 1;
+  now_tm.tm_mday = 5;
+  now_tm.tm_hour = 14;
+  now_tm.tm_min = 25;
+  now = mktime(&now_tm);
 
   objects.erase(std::remove_if(objects.begin(), objects.end(), [now](const ObjectData& object) {
     return object.estimated_time < now;
@@ -308,7 +328,7 @@ int main(int argc, char *argv[]) {
       strncpy(text_buffer, dest_text_1.c_str(), 192);
 
       rgb_matrix::DrawText(offscreen, font,
-                          x + 40, y + font.baseline() + line_offset,
+                          x + 45, y + font.baseline() + line_offset,
                           color, NULL, text_buffer,
                           letter_spacing);
 
@@ -316,7 +336,7 @@ int main(int argc, char *argv[]) {
       strncpy(text_buffer, est_text_1.c_str(), 192);
 
       rgb_matrix::DrawText(offscreen, font,
-                          192 - 40, y + font.baseline() + line_offset,
+                          192 - 45, y + font.baseline() + line_offset,
                           color, NULL, text_buffer,
                           letter_spacing);
       line_offset += font.height() + line_spacing;
@@ -339,11 +359,27 @@ int main(int argc, char *argv[]) {
 
       // if there's a second object, grab it
       if (objects.size() > 1) {
-        std::string text = "2nd 14:18 " + objects[1].destination + "               On Time";
-        strncpy(text_buffer, text.c_str(), 192);
+        std::string sch_text_1 = "2nd " + objects[0].get_scheduled_time();
+        strncpy(text_buffer, sch_text_1.c_str(), 192);
 
         rgb_matrix::DrawText(offscreen, font,
                             x, y + font.baseline() + line_offset,
+                            color, NULL, text_buffer,
+                            letter_spacing);
+
+        std::string dest_text_1 = objects[0].destination;
+        strncpy(text_buffer, dest_text_1.c_str(), 192);
+
+        rgb_matrix::DrawText(offscreen, font,
+                            x + 45, y + font.baseline() + line_offset,
+                            color, NULL, text_buffer,
+                            letter_spacing);
+
+        std::string est_text_1 = "Exp " + objects[0].get_estimated_time();
+        strncpy(text_buffer, est_text_1.c_str(), 192);
+
+        rgb_matrix::DrawText(offscreen, font,
+                            192 - 45, y + font.baseline() + line_offset,
                             color, NULL, text_buffer,
                             letter_spacing);
         line_offset += font.height() + line_spacing;
@@ -351,8 +387,8 @@ int main(int argc, char *argv[]) {
         // display the current time
         time_t now = time(nullptr);
         strftime(text_buffer, sizeof(text_buffer), "%H:%M:%S", localtime(&now));
-        rgb_matrix::DrawText(offscreen, font,
-                            x, y + font.baseline() + line_offset,
+        rgb_matrix::DrawText(offscreen, time_font,
+                            x + 100, y + time_font.baseline() + line_offset,
                             color, NULL, text_buffer,
                             letter_spacing);
         line_offset += font.height() + line_spacing;
@@ -360,9 +396,11 @@ int main(int argc, char *argv[]) {
     } else {
       // display the current time
       time_t now = time(nullptr);
+      line_offset += font.height() + line_spacing;
+
       strftime(text_buffer, sizeof(text_buffer), "%H:%M:%S", localtime(&now));
-      rgb_matrix::DrawText(offscreen, font,
-                          x, y + font.baseline() + line_offset,
+      rgb_matrix::DrawText(offscreen, time_font,
+                          x + 100, y + time_font.baseline() + line_offset,
                           color, NULL, text_buffer,
                           letter_spacing);
       line_offset += font.height() + line_spacing;
