@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 using namespace rgb_matrix;
+using json = nlohmann::json;
 
 // create objectData class. holds two text fields and twod atetime fields.
 class ObjectData {
