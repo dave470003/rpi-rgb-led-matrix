@@ -13,7 +13,7 @@
 #include <string>
 #include <algorithm>
 #include <curl/curl.h>
-#include <json.hpp>
+#include <nlohmann/json.hpp>
 
 using namespace rgb_matrix;
 
@@ -174,81 +174,61 @@ int main(int argc, char *argv[]) {
   Json::Reader reader;
 
   // create a new function called "pull_from_api"
-  pull_from_api() {
-
-    // Pull a json file from a url: freddyanddavid.com/api/config
+  json pull_from_api() {
     std::string json_string;
-    size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp) {
-        ((std::string*)userp)->append((char*)contents, size * nmemb);
-        return size * nmemb;
-    }
     curl_global_init(CURL_GLOBAL_DEFAULT);
-    CURL *curl;
-    CURLcode res;
-    std::string url = "http://freddyanddavid.com/api/config";
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &json_string);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK) {
-        fprintf(stderr, "cURL error: %s\n", curl_easy_strerror(res));
-      }
+    CURL* curl = curl_easy_init();
+
+    if (curl) {
+        std::string url = "http://freddyanddavid.com/api/config";
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &json_string);
+
+        CURLcode res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            std::cerr << "cURL error: " << curl_easy_strerror(res) << std::endl;
+        }
+
+        curl_easy_cleanup(curl);
     }
-    curl_easy_cleanup(curl);
     curl_global_cleanup();
 
-    // parse the json file
-    if (!reader.parse(json_string, root)) {
-      fprintf(stderr, "Failed to parse JSON\n");
-      return 1;
+    // Parse JSON
+    json root;
+    try {
+        root = json::parse(json_string);
+    } catch (json::parse_error& e) {
+        std::cerr << "Failed to parse JSON: " << e.what() << std::endl;
     }
 
-    // get the "jokes" array
-    jokes = root["jokes"];
-
-    // get the "affirmations" array
-    affirmations = root["affirmations"];
-
-    // get the "events" array of objects
-    events = root["events"];
-
-    // get the "slideshow" array
-    slideshow = root["slideshow"];
-
-    // get the "gifs" array
-    gifs = root["gifs"];
-
-    // get the "comments" array
-    comments = root["comments"];
-
-    // get the "important message" string
-    important_message = root["important_message"];
-
-    // get the mode
-    mode = root["mode"];
-
-    // get the secret messages
-    secrets = root["secrets"];
+    return root;
   }
 
-  pull_from_api();
+  // Pull JSON from API
+  json root = pull_from_api();
 
-  // Create an array of ObjectData called event_objects
+  // Extract arrays and values
+  json jokes = root.value("jokes", json::array());
+  json affirmations = root.value("affirmations", json::array());
+  json events = root.value("events", json::array());
+  json slideshow = root.value("slideshow", json::array());
+  json gifs = root.value("gifs", json::array());
+  json comments = root.value("comments", json::array());
+  std::string important_message = root.value("important_message", "");
+  std::string mode = root.value("mode", "");
+  json secrets = root.value("secrets", json::array());
+
+  // Convert events to ObjectData vector
   std::vector<ObjectData> objects;
-
-  // Create a new ObjectData object from each entry in the events array
-  for (int i = 0; i < events.size(); i++) {
-    Json::Value event = events[i];
-    ObjectData object;
-    object.destination = event["destination"].asString();
-    object.description = event["description"].asString();
-    object.scheduled_time = event["scheduled_time"].asInt();
-    object.estimated_time = event["estimated_time"].asInt();
-    objects.push_back(object);
+  for (auto& event : events) {
+      ObjectData object;
+      object.destination = event.value("destination", "");
+      object.description = event.value("description", "");
+      object.scheduled_time = event.value("scheduled_time", 0);
+      object.estimated_time = event.value("estimated_time", 0);
+      objects.push_back(object);
   }
-
 
   /* x_origin is set by default just right of the screen */
   const int x_mid_default_start = (matrix_options.chain_length
