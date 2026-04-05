@@ -1,4 +1,4 @@
-CFLAGS=-Wall -O3 -g -Wextra -Wno-unused-parameter
+CFLAGS=-Wall -O3 -g -Wextra -Wno-unused-parameter -I/usr/include/curl
 CXXFLAGS=$(CFLAGS)
 OBJECTS=demo-main.o minimal-example.o c-example.o text-example.o scrolling-text-example.o clock.o ledcat.o input-example.o pixel-mover.o train.o
 BINARIES=demo minimal-example c-example text-example scrolling-text-example clock ledcat input-example pixel-mover train
