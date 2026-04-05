@@ -105,6 +105,7 @@ json pull_from_api() {
   // Parse JSON
   json root;
   try {
+      printf("JSON: %s\n", json_string.c_str());
       root = json::parse(json_string);
   } catch (json::parse_error& e) {
       std::cerr << "Failed to parse JSON: " << e.what() << std::endl;
@@ -124,7 +125,6 @@ int main(int argc, char *argv[]) {
   Color color(255, 255, 0);
   Color bg_color(0, 0, 0);
   Color outline_color(0,0,0);
-  bool with_outline = false;
 
   const char *bdf_font_file = NULL;
   int x_orig = 0;
