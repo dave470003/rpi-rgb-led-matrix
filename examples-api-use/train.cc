@@ -296,9 +296,7 @@ int main(int argc, char *argv[]) {
 
     // if objects has at least one object, grab the first one
     if (!objects.empty()) {
-      x = x_orig;
-
-      std::string text = "1st " + objects[0].get_scheduled_time();
+      std::string sch_text_1 = "1st " + objects[0].get_scheduled_time();
       strncpy(text_buffer, text.c_str(), 192);
 
       rgb_matrix::DrawText(offscreen, font,
@@ -306,7 +304,7 @@ int main(int argc, char *argv[]) {
                           color, NULL, text_buffer,
                           letter_spacing);
 
-      std::string text = objects[0].destination;
+      std::string dest_text_1 = objects[0].destination;
       strncpy(text_buffer, text.c_str(), 192);
 
       rgb_matrix::DrawText(offscreen, font,
@@ -314,7 +312,7 @@ int main(int argc, char *argv[]) {
                           color, NULL, text_buffer,
                           letter_spacing);
 
-      std::string text = "Exp " + objects[0].get_estimated_time();
+      std::string est_text_1 = "Exp " + objects[0].get_estimated_time();
       strncpy(text_buffer, text.c_str(), 192);
 
       rgb_matrix::DrawText(offscreen, font,
