@@ -173,7 +173,7 @@ int main(int argc, char *argv[]) {
 
   rgb_matrix::Font time_font;
   if (!time_font.LoadFont("../fonts/dotbold.bdf")) {
-    fprintf(stderr, "Couldn't load font '%s'\n", bdf_font_file);
+    fprintf(stderr, "Couldn't load time font '%s'\n", bdf_font_file);
     return 1;
   }
 
