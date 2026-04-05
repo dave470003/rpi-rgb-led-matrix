@@ -26,6 +26,20 @@ public:
   std::string description;
   time_t scheduled_time;
   time_t estimated_time;
+
+
+// need a function to return scheduled_time as a formatted string
+std::string get_scheduled_time() {
+  char buf[32];
+  strftime(buf, sizeof(buf), "%H:%M", localtime(&scheduled_time));
+  return buf;
+}
+// need a function to return estimated_time as a formatted string
+std::string get_estimated_time() {
+  char buf[32];
+  strftime(buf, sizeof(buf), "%H:%M", localtime(&estimated_time));
+  return buf;
+}
 };
 
 volatile bool interrupt_received = false;
@@ -267,7 +281,7 @@ int main(int argc, char *argv[]) {
   now_tm.tm_year = 2026 - 1900;
   now_tm.tm_mon = 9 - 1;
   now_tm.tm_mday = 5;
-  now_tm.tm_hour = 14;
+  now_tm.tm_hour = 13;
   now_tm.tm_min = 20;
   now = mktime(&now_tm);
 
@@ -282,15 +296,33 @@ int main(int argc, char *argv[]) {
 
     // if objects has at least one object, grab the first one
     if (!objects.empty()) {
+      x = x_orig;
 
-      std::string text = "1st 14:03 " + objects[0].destination + "               Exp 14:05";
+      std::string text = "1st " + objects[0].get_scheduled_time();
       strncpy(text_buffer, text.c_str(), 192);
 
       rgb_matrix::DrawText(offscreen, font,
                           x, y + font.baseline() + line_offset,
                           color, NULL, text_buffer,
                           letter_spacing);
+
+      std::string text = objects[0].destination;
+      strncpy(text_buffer, text.c_str(), 192);
+
+      rgb_matrix::DrawText(offscreen, font,
+                          x + 40, y + font.baseline() + line_offset,
+                          color, NULL, text_buffer,
+                          letter_spacing);
+
+      std::string text = "Exp " + objects[0].get_estimated_time();
+      strncpy(text_buffer, text.c_str(), 192);
+
+      rgb_matrix::DrawText(offscreen, font,
+                          192 - 40, y + font.baseline() + line_offset,
+                          color, NULL, text_buffer,
+                          letter_spacing);
       line_offset += font.height() + line_spacing;
+
 
       line = objects[0].description;
 
