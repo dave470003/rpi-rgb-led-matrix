@@ -400,7 +400,7 @@ int main(int argc, char *argv[]) {
 
       strftime(text_buffer, sizeof(text_buffer), "%H:%M:%S", localtime(&now));
       rgb_matrix::DrawText(offscreen, time_font,
-                          x + 100, y + time_font.baseline() + line_offset,
+                          x + 54, y + time_font.baseline() + line_offset,
                           color, NULL, text_buffer,
                           letter_spacing);
       line_offset += font.height() + line_spacing;
