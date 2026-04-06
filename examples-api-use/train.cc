@@ -256,6 +256,8 @@ int main(int argc, char *argv[]) {
   // make an array called alt_screens;
   std::vector<std::string> alt_screens;
 
+  std::string message;
+
   //switch on mode
   if (mode == "events_only") {
     main_screen = "events";
@@ -486,7 +488,7 @@ int main(int argc, char *argv[]) {
 
         line_offset += font.height() + line_spacing;
 
-        if (scroll_l > (1000000 / speed)) {
+        if (scroll_l > (1000000 / scroll_speed)) {
           if (scroll_speed > 0 && --x_mid + middle_length < 0) {
             x_mid = x_mid_orig;
           }
@@ -543,16 +545,21 @@ int main(int argc, char *argv[]) {
       }
     } else if (current_screen == "jokes") {
       // the jokes array consists of an array of objects, one property is message. grab the message from a random joke.
-      std::string line = jokes[rand() % jokes.size()].message;
+
+      int index = rand() % jokes.size();
+
+      if (jokes[index].contains("message") && jokes[index]["message"].is_string()) {
+          message = jokes[index]["message"].get<std::string>();
+      }
 
       line_offset += font.height() + line_spacing;
 
       middle_length = rgb_matrix::DrawText(offscreen, font,
         x_mid, y + font.baseline() + line_offset,
         color, nullptr,
-        line.c_str(), letter_spacing);
+        message.c_str(), letter_spacing);
 
-      if (scroll_l > (1000000 / speed)) {
+      if (scroll_l > (1000000 / scroll_speed)) {
         if (scroll_speed > 0 && --x_mid + middle_length < 0) {
           x_mid = x_mid_orig;
         }
@@ -560,16 +567,20 @@ int main(int argc, char *argv[]) {
       }
     } else if (current_screen == "affirmations") {
       // the affirmations array consists of an array of objects, one property is message. grab the message from a random joke.
-      std::string line = affirmations[rand() % affirmations.size()].message;
+      int index = rand() % affirmations.size();
+
+      if (affirmations[index].contains("message") && affirmations[index]["message"].is_string()) {
+          message = affirmations[index]["message"].get<std::string>();
+      }
 
       line_offset += font.height() + line_spacing;
 
       middle_length = rgb_matrix::DrawText(offscreen, font,
         x_mid, y + font.baseline() + line_offset,
         color, nullptr,
-        line.c_str(), letter_spacing);
+        message.c_str(), letter_spacing);
 
-      if (scroll_l > (1000000 / speed)) {
+      if (scroll_l > (1000000 / scroll_speed)) {
         if (scroll_speed > 0 && --x_mid + middle_length < 0) {
           x_mid = x_mid_orig;
         }
