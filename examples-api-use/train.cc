@@ -591,6 +591,12 @@ int main(int argc, char *argv[]) {
     // Atomic swap with double buffer
     offscreen = matrix->SwapOnVSync(offscreen);
     scroll_l++;
+    screen_l++;
+    fetch_l++;
+
+    // print scroll_l
+    std::cout << "scroll_l: " << scroll_l << std::endl;
+
     // usleep(delay_speed_usec);
   }
 
