@@ -433,9 +433,11 @@ int main(int argc, char *argv[]) {
       } else if (current_screen != main_screen) {
         last_alt_screen = current_screen;
         current_screen = main_screen;
+        x_mid = x_mid_orig;
       //} else if (last_alt_screen is empty
       } else if (last_alt_screen.empty()) {
         current_screen = alt_screens[0];
+        x_mid = x_mid_orig;
       } else {
         // find in array
         auto it = std::find(alt_screens.begin(), alt_screens.end(), last_alt_screen);
@@ -444,6 +446,7 @@ int main(int argc, char *argv[]) {
         } else {
             current_screen = *it;
         }
+        x_mid = x_mid_orig;
       }
 
       if (current_screen == "jokes") {
