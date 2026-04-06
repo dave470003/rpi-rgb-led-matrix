@@ -308,9 +308,9 @@ int main(int argc, char *argv[]) {
   const int x_mid_default_start = (matrix_options.chain_length
     * matrix_options.cols) + 5;
   int x_mid_orig = x_mid_default_start;
-  int scroll_speed = 30000;
-  float screen_speed = 300;
-  float fetch_speed = 100;
+  int scroll_speed = 100000;
+  float screen_speed = 30;
+  float fetch_speed = 10;
 
   int delay_speed_usec = 1000000;
   if (scroll_speed > 0) {
@@ -445,6 +445,21 @@ int main(int argc, char *argv[]) {
             current_screen = *it;
         }
       }
+
+      if (current_screen == "jokes") {
+        int index = rand() % jokes.size();
+
+        if (jokes[index].contains("message") && jokes[index]["message"].is_string()) {
+            message = jokes[index]["message"].get<std::string>();
+        }
+      } else if (current_screen == "affirmations") {
+        int index = rand() % affirmations.size();
+
+        if (affirmations[index].contains("message") && affirmations[index]["message"].is_string()) {
+            message = affirmations[index]["message"].get<std::string>();
+        }
+      }
+
     }
 
     if (current_screen == "events") {
@@ -544,14 +559,6 @@ int main(int argc, char *argv[]) {
         line_offset += font.height() + line_spacing;
       }
     } else if (current_screen == "jokes") {
-      // the jokes array consists of an array of objects, one property is message. grab the message from a random joke.
-
-      int index = rand() % jokes.size();
-
-      if (jokes[index].contains("message") && jokes[index]["message"].is_string()) {
-          message = jokes[index]["message"].get<std::string>();
-      }
-
       line_offset += font.height() + line_spacing;
 
       middle_length = rgb_matrix::DrawText(offscreen, font,
@@ -566,13 +573,6 @@ int main(int argc, char *argv[]) {
         scroll_l = 0;
       }
     } else if (current_screen == "affirmations") {
-      // the affirmations array consists of an array of objects, one property is message. grab the message from a random joke.
-      int index = rand() % affirmations.size();
-
-      if (affirmations[index].contains("message") && affirmations[index]["message"].is_string()) {
-          message = affirmations[index]["message"].get<std::string>();
-      }
-
       line_offset += font.height() + line_spacing;
 
       middle_length = rgb_matrix::DrawText(offscreen, font,
@@ -593,9 +593,6 @@ int main(int argc, char *argv[]) {
     scroll_l++;
     screen_l++;
     fetch_l++;
-
-    // print scroll_l
-    std::cout << "scroll_l: " << scroll_l << std::endl;
 
     // usleep(delay_speed_usec);
   }
