@@ -308,9 +308,9 @@ int main(int argc, char *argv[]) {
   const int x_mid_default_start = (matrix_options.chain_length
     * matrix_options.cols) + 5;
   int x_mid_orig = x_mid_default_start;
-  int scroll_speed = 3000;
-  float screen_speed = 30;
-  float fetch_speed = 10;
+  int scroll_speed = 30000;
+  float screen_speed = 300;
+  float fetch_speed = 100;
 
   int delay_speed_usec = 1000000;
   if (scroll_speed > 0) {
