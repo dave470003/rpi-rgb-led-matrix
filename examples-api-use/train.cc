@@ -250,6 +250,45 @@ int main(int argc, char *argv[]) {
   std::string mode = get_string_or_empty(root, "mode");
   json secrets = root.value("secrets", json::array());
 
+  std::string main_screen;
+  std::string current_screen;
+  std::string last_alt_screen;
+  // make an array called alt_screens;
+  std::vector<std::string> alt_screens;
+
+  //switch on mode
+  if (mode == "events_only") {
+    main_screen = "events";
+  } else if (mode == "important_message_only") {
+    main_screen = "importantMessage";
+  } else {
+    main_screen = "events";
+
+    //if important_message is not empty
+    if (!important_message.empty()) {
+      alt_screens.push_back("importantMessage");
+    } else {
+      if (jokes.size() > 0) {
+        alt_screens.push_back("jokes");
+      }
+      if (affirmations.size() > 0) {
+        alt_screens.push_back("affirmations");
+      }
+      if (slideshow.size() > 0) {
+        alt_screens.push_back("slideshow");
+      }
+      if (gifs.size() > 0) {
+        alt_screens.push_back("gifs");
+      }
+      if (comments.size() > 0) {
+        alt_screens.push_back("comments");
+      }
+      if (secrets.size() > 0) {
+        alt_screens.push_back("secrets");
+      }
+    }
+  }
+
   // Convert events to ObjectData vector
   std::vector<ObjectData> objects;
   for (auto& event : events) {
@@ -265,10 +304,13 @@ int main(int argc, char *argv[]) {
   const int x_mid_default_start = (matrix_options.chain_length
     * matrix_options.cols) + 5;
   int x_mid_orig = x_mid_default_start;
-  int speed = 7;
+  int scroll_speed = 30;
+  float screen_speed = 0.3;
+  float fetch_speed = 0.1;
+
   int delay_speed_usec = 1000000;
-  if (speed > 0) {
-    delay_speed_usec = 1000000 / speed / font.CharacterWidth('W');
+  if (scroll_speed > 0) {
+    delay_speed_usec = 1000000 / scroll_speed / font.CharacterWidth('W');
   } else if (x_mid_orig == x_mid_default_start) {
     // There would be no scrolling, so text would never appear. Move to front.
     x_mid_orig = 0;
@@ -309,57 +351,105 @@ int main(int argc, char *argv[]) {
     return object.estimated_time < now;
   }), objects.end());
 
+  int scroll_l = 0;
+  int screen_l = 0;
+  int fetch_l = 0;
+
   while (!interrupt_received) {
     offscreen->Fill(bg_color.r, bg_color.g, bg_color.b);
 
     int line_offset = 0;
 
-    // if objects has at least one object, grab the first one
-    if (!objects.empty()) {
-      std::string sch_text_1 = "1st " + objects[0].get_scheduled_time();
-      strncpy(text_buffer, sch_text_1.c_str(), 192);
+    if (fetch_l > (1000000 / fetch_speed)) {
+      printf("Fetching new data\n");
+      fetch_l = 0;
+      // Pull JSON from API
+      root = pull_from_api();
 
-      rgb_matrix::DrawText(offscreen, font,
-                          x, y + font.baseline() + line_offset,
-                          color, NULL, text_buffer,
-                          letter_spacing);
+      // Extract arrays and values
+      jokes = root.value("jokes", json::array());
+      affirmations = root.value("affirmations", json::array());
+      events = root.value("events", json::array());
+      slideshow = root.value("slideshow", json::array());
+      gifs = root.value("gifs", json::array());
+      comments = root.value("comments", json::array());
+      important_message = get_string_or_empty(root, "importantMessage");
+      mode = get_string_or_empty(root, "mode");
+      secrets = root.value("secrets", json::array());
 
-      std::string dest_text_1 = objects[0].destination;
-      strncpy(text_buffer, dest_text_1.c_str(), 192);
-
-      rgb_matrix::DrawText(offscreen, font,
-                          x + 45, y + font.baseline() + line_offset,
-                          color, NULL, text_buffer,
-                          letter_spacing);
-
-      std::string est_text_1 = "Exp " + objects[0].get_estimated_time();
-      strncpy(text_buffer, est_text_1.c_str(), 192);
-
-      rgb_matrix::DrawText(offscreen, font,
-                          192 - 45, y + font.baseline() + line_offset,
-                          color, NULL, text_buffer,
-                          letter_spacing);
-      line_offset += font.height() + line_spacing;
-
-
-      line = objects[0].description;
-
-      // offscreen_canvas_middle->Fill(bg_color.r, bg_color.g, bg_color.b);
-      // length = holds how many pixels our text takes up
-      middle_length = rgb_matrix::DrawText(offscreen, font,
-                                    x_mid, y + font.baseline() + line_offset,
-                                    color, nullptr,
-                                    line.c_str(), letter_spacing);
-
-      line_offset += font.height() + line_spacing;
-
-      if (speed > 0 && --x_mid + middle_length < 0) {
-        x_mid = x_mid_orig;
+      // Convert events to ObjectData vector
+      for (auto& event : events) {
+          ObjectData object;
+          object.destination = event.value("destination", "");
+          object.description = event.value("description", "");
+          object.scheduled_time = event.value("scheduled_time", 0);
+          object.estimated_time = event.value("estimated_time", 0);
+          objects.push_back(object);
       }
 
-      // if there's a second object, grab it
-      if (objects.size() > 1) {
-        std::string sch_text_1 = "2nd " + objects[1].get_scheduled_time();
+      //switch on mode
+      if (mode == "events_only") {
+        main_screen = "events";
+      } else if (mode == "important_message_only") {
+        main_screen = "importantMessage";
+      } else {
+        main_screen = "events";
+
+        //if important_message is not empty
+        if (!important_message.empty()) {
+          alt_screens.push_back("importantMessage");
+        } else {
+          if (jokes.size() > 0) {
+            alt_screens.push_back("jokes");
+          }
+          if (affirmations.size() > 0) {
+            alt_screens.push_back("affirmations");
+          }
+          if (slideshow.size() > 0) {
+            alt_screens.push_back("slideshow");
+          }
+          if (gifs.size() > 0) {
+            alt_screens.push_back("gifs");
+          }
+          if (comments.size() > 0) {
+            alt_screens.push_back("comments");
+          }
+          if (secrets.size() > 0) {
+            alt_screens.push_back("secrets");
+          }
+        }
+      }
+    }
+
+    if (screen_l > (1000000 / screen_speed)) {
+      screen_l = 0;
+
+      if (alt_screens.size() == 0) {
+        current_screen = main_screen;
+      } else if (current_screen != main_screen) {
+        last_alt_screen = current_screen;
+        current_screen = main_screen;
+      //} else if (last_alt_screen is empty
+      } else if (last_alt_screen.empty()) {
+        current_screen = alt_screens[0];
+      } else {
+        // find in array
+        auto it = std::find(alt_screens.begin(), alt_screens.end(), last_alt_screen);
+        if (it == alt_screens.end() || ++it == alt_screens.end()) {
+            current_screen = alt_screens[0];
+        } else {
+            current_screen = *it;
+        }
+      }
+
+      printf('%s\n', current_screen.c_str());
+    }
+
+    if (current_screen == "events") {
+
+      // if objects has at least one object, grab the first one
+      if (!objects.empty()) {
+        std::string sch_text_1 = "1st " + objects[0].get_scheduled_time();
         strncpy(text_buffer, sch_text_1.c_str(), 192);
 
         rgb_matrix::DrawText(offscreen, font,
@@ -367,7 +457,7 @@ int main(int argc, char *argv[]) {
                             color, NULL, text_buffer,
                             letter_spacing);
 
-        std::string dest_text_1 = objects[1].destination;
+        std::string dest_text_1 = objects[0].destination;
         strncpy(text_buffer, dest_text_1.c_str(), 192);
 
         rgb_matrix::DrawText(offscreen, font,
@@ -375,7 +465,7 @@ int main(int argc, char *argv[]) {
                             color, NULL, text_buffer,
                             letter_spacing);
 
-        std::string est_text_1 = "Exp " + objects[1].get_estimated_time();
+        std::string est_text_1 = "Exp " + objects[0].get_estimated_time();
         strncpy(text_buffer, est_text_1.c_str(), 192);
 
         rgb_matrix::DrawText(offscreen, font,
@@ -383,32 +473,114 @@ int main(int argc, char *argv[]) {
                             color, NULL, text_buffer,
                             letter_spacing);
         line_offset += font.height() + line_spacing;
+
+
+        line = objects[0].description;
+
+        // offscreen_canvas_middle->Fill(bg_color.r, bg_color.g, bg_color.b);
+        // length = holds how many pixels our text takes up
+        middle_length = rgb_matrix::DrawText(offscreen, font,
+                                      x_mid, y + font.baseline() + line_offset,
+                                      color, nullptr,
+                                      line.c_str(), letter_spacing);
+
+        line_offset += font.height() + line_spacing;
+
+        if (scroll_l > (1000000 / speed)) {
+          if (scroll_speed > 0 && --x_mid + middle_length < 0) {
+            x_mid = x_mid_orig;
+          }
+          scroll_l = 0;
+        }
+
+        // if there's a second object, grab it
+        if (objects.size() > 1) {
+          std::string sch_text_1 = "2nd " + objects[1].get_scheduled_time();
+          strncpy(text_buffer, sch_text_1.c_str(), 192);
+
+          rgb_matrix::DrawText(offscreen, font,
+                              x, y + font.baseline() + line_offset,
+                              color, NULL, text_buffer,
+                              letter_spacing);
+
+          std::string dest_text_1 = objects[1].destination;
+          strncpy(text_buffer, dest_text_1.c_str(), 192);
+
+          rgb_matrix::DrawText(offscreen, font,
+                              x + 45, y + font.baseline() + line_offset,
+                              color, NULL, text_buffer,
+                              letter_spacing);
+
+          std::string est_text_1 = "Exp " + objects[1].get_estimated_time();
+          strncpy(text_buffer, est_text_1.c_str(), 192);
+
+          rgb_matrix::DrawText(offscreen, font,
+                              192 - 45, y + font.baseline() + line_offset,
+                              color, NULL, text_buffer,
+                              letter_spacing);
+          line_offset += font.height() + line_spacing;
+        } else {
+          // display the current time
+          time_t now = time(nullptr);
+          strftime(text_buffer, sizeof(text_buffer), "%H:%M:%S", localtime(&now));
+          rgb_matrix::DrawText(offscreen, time_font,
+                              x + 58, y + time_font.baseline() + line_offset,
+                              color, NULL, text_buffer,
+                              letter_spacing);
+          line_offset += font.height() + line_spacing;
+        }
       } else {
         // display the current time
         time_t now = time(nullptr);
+        line_offset += font.height() + line_spacing;
+
         strftime(text_buffer, sizeof(text_buffer), "%H:%M:%S", localtime(&now));
         rgb_matrix::DrawText(offscreen, time_font,
-                            x + 54, y + time_font.baseline() + line_offset,
+                            x + 58, y + time_font.baseline() + line_offset,
                             color, NULL, text_buffer,
                             letter_spacing);
         line_offset += font.height() + line_spacing;
       }
-    } else {
-      // display the current time
-      time_t now = time(nullptr);
+    } else if (current_screen == "jokes") {
+      // the jokes array consists of an array of objects, one property is message. grab the message from a random joke.
+      std::string line = jokes[rand() % jokes.size()].message;
+
       line_offset += font.height() + line_spacing;
 
-      strftime(text_buffer, sizeof(text_buffer), "%H:%M:%S", localtime(&now));
-      rgb_matrix::DrawText(offscreen, time_font,
-                          x + 54, y + time_font.baseline() + line_offset,
-                          color, NULL, text_buffer,
-                          letter_spacing);
+      middle_length = rgb_matrix::DrawText(offscreen, font,
+        x_mid, y + font.baseline() + line_offset,
+        color, nullptr,
+        line.c_str(), letter_spacing);
+
+      if (scroll_l > (1000000 / speed)) {
+        if (scroll_speed > 0 && --x_mid + middle_length < 0) {
+          x_mid = x_mid_orig;
+        }
+        scroll_l = 0;
+      }
+    } else if (current_screen == "affirmations") {
+      // the affirmations array consists of an array of objects, one property is message. grab the message from a random joke.
+      std::string line = affirmations[rand() % affirmations.size()].message;
+
       line_offset += font.height() + line_spacing;
+
+      middle_length = rgb_matrix::DrawText(offscreen, font,
+        x_mid, y + font.baseline() + line_offset,
+        color, nullptr,
+        line.c_str(), letter_spacing);
+
+      if (scroll_l > (1000000 / speed)) {
+        if (scroll_speed > 0 && --x_mid + middle_length < 0) {
+          x_mid = x_mid_orig;
+        }
+        scroll_l = 0;
+      }
     }
 
     // Atomic swap with double buffer
     offscreen = matrix->SwapOnVSync(offscreen);
-    usleep(delay_speed_usec);
+    scroll_l++;
+    // usleep(delay_speed_usec);
   }
 
   // Finished. Shut down the RGB matrix.
