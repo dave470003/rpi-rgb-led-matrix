@@ -444,7 +444,7 @@ int main(int argc, char *argv[]) {
         }
       }
 
-      printf('%s\n', current_screen.c_str());
+      printf(current_screen);
     }
 
     if (current_screen == "events") {
