@@ -291,6 +291,8 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  current_screen = main_screen;
+
   // Convert events to ObjectData vector
   std::vector<ObjectData> objects;
   for (auto& event : events) {
@@ -443,8 +445,6 @@ int main(int argc, char *argv[]) {
             current_screen = *it;
         }
       }
-
-      printf(current_screen);
     }
 
     if (current_screen == "events") {
