@@ -397,6 +397,9 @@ int main(int argc, char *argv[]) {
 
       time_t now = time(nullptr);
 
+      //empty alt_screens
+      alt_screens.clear();
+
       objects.erase(std::remove_if(objects.begin(), objects.end(), [now](const ObjectData& object) {
         return object.estimated_time < now;
       }), objects.end());
