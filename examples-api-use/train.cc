@@ -474,13 +474,10 @@ int main(int argc, char *argv[]) {
             message = affirmations[index]["message"].get<std::string>();
         }
       } else if (current_screen == "comments") {
-        int index = rand() % affirmations.size();
-
-        if (comments[index].contains("message") && comments[index]["message"].is_string()) {
-            message = comments[index]["message"].get<std::string>();
-        }
+        int index = rand() % comments.size();
+        message = comments[index].get<std::string>();
       } else if (current_screen == "secrets") {
-        int index = rand() % affirmations.size();
+        int index = rand() % secrets.size();
 
         if (secrets[index].contains("message") && secrets[index]["message"].is_string()) {
             message = secrets[index]["message"].get<std::string>();
