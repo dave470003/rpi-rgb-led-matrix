@@ -304,6 +304,10 @@ int main(int argc, char *argv[]) {
       objects.push_back(object);
   }
 
+  objects.erase(std::remove_if(objects.begin(), objects.end(), [now](const ObjectData& object) {
+    return object.estimated_time < now;
+  }), objects.end());
+
   /* x_origin is set by default just right of the screen */
   const int x_mid_default_start = (matrix_options.chain_length
     * matrix_options.cols) + 5;
@@ -351,10 +355,6 @@ int main(int argc, char *argv[]) {
   now_tm.tm_min = 25;
   now = mktime(&now_tm);
 
-  objects.erase(std::remove_if(objects.begin(), objects.end(), [now](const ObjectData& object) {
-    return object.estimated_time < now;
-  }), objects.end());
-
   int scroll_l = 0;
   int screen_l = 0;
   int fetch_l = 0;
@@ -390,6 +390,10 @@ int main(int argc, char *argv[]) {
           object.estimated_time = event.value("estimated_time", 0);
           objects.push_back(object);
       }
+
+      objects.erase(std::remove_if(objects.begin(), objects.end(), [now](const ObjectData& object) {
+        return object.estimated_time < now;
+      }), objects.end());
 
       //switch on mode
       if (mode == "events_only") {
