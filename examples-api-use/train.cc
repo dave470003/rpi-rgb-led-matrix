@@ -307,6 +307,8 @@ int main(int argc, char *argv[]) {
       objects.push_back(object);
   }
 
+  time_t now = time(nullptr);
+
   objects.erase(std::remove_if(objects.begin(), objects.end(), [now](const ObjectData& object) {
     return object.estimated_time < now;
   }), objects.end());
