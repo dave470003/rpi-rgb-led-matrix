@@ -352,7 +352,7 @@ int main(int argc, char *argv[]) {
   setenv("TZ", "Europe/London", 1);
   tzset();  // reload timezone info
 
-  time_t now = time(nullptr);
+  now = time(nullptr);
   struct tm now_tm = *localtime(&now);
   now_tm.tm_year = 2026 - 1900;
   now_tm.tm_mon = 9 - 1;
