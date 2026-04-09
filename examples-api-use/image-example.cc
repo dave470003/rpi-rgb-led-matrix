@@ -80,7 +80,7 @@ static ImageVector LoadImageAndScaleImage(const char *filename,
 // interface as well as the FrameCanvas we use in the double-buffering of the
 // animted image.
 void CopyImageToCanvas(const Magick::Image &image, Canvas *canvas) {
-  const int offset_x = 0, offset_y = 0;  // If you want to move the image.
+  int offset_x = 0, offset_y = 0;  // If you want to move the image.
 
   offset_x = (192 - image.columns()) / 2;
   offset_y = (32 - image.rows()) / 2;
