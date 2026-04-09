@@ -369,7 +369,6 @@ int main(int argc, char *argv[]) {
     if (next_fetch < time(nullptr)) {
       next_fetch = time(nullptr) + fetch_interval;
       printf("Fetching new data\n");
-      fetch_l = 0;
       // Pull JSON from API
       root = pull_from_api();
 
@@ -393,6 +392,8 @@ int main(int argc, char *argv[]) {
           object.estimated_time = event.value("estimated_time", 0);
           objects.push_back(object);
       }
+
+      time_t now = time(nullptr);
 
       objects.erase(std::remove_if(objects.begin(), objects.end(), [now](const ObjectData& object) {
         return object.estimated_time < now;
@@ -489,6 +490,7 @@ int main(int argc, char *argv[]) {
           next_screen_update = std::min(objects[0].estimated_time, time(nullptr) + 30);
         } else {
           next_screen_update = time(nullptr) + 30;
+        }
       } else {
         next_screen_update = time(nullptr) + screen_update_interval;
       }
