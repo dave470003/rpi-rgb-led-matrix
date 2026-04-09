@@ -236,8 +236,8 @@ int main(int argc, char *argv[]) {
     return "";
   };
 
-  time_t next_screen_update;
-  time_t next_fetch;
+  time_t next_screen_update = time(nullptr);
+  time_t next_fetch = time(nullptr);
 
   // Pull JSON from API
   json root = pull_from_api();
