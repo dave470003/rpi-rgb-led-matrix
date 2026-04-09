@@ -236,6 +236,9 @@ int main(int argc, char *argv[]) {
     return "";
   };
 
+  time_t next_screen_update;
+  time_t next_fetch;
+
   // Pull JSON from API
   json root = pull_from_api();
 
@@ -313,8 +316,6 @@ int main(int argc, char *argv[]) {
     * matrix_options.cols) + 5;
   int x_mid_orig = x_mid_default_start;
   int scroll_speed = 100000;
-  float screen_speed = 30;
-  float fetch_speed = 10;
 
   int delay_speed_usec = 1000000;
   if (scroll_speed > 0) {
@@ -326,6 +327,9 @@ int main(int argc, char *argv[]) {
 
   int x_mid = x_mid_orig;
   int middle_length = 0;
+
+  int screen_update_interval = 15;
+  int fetch_interval = 60;
   // add a string variable called 'line'
   std::string line;
 
@@ -356,15 +360,14 @@ int main(int argc, char *argv[]) {
   now = mktime(&now_tm);
 
   int scroll_l = 0;
-  int screen_l = 0;
-  int fetch_l = 0;
 
   while (!interrupt_received) {
     offscreen->Fill(bg_color.r, bg_color.g, bg_color.b);
 
     int line_offset = 0;
 
-    if (fetch_l > (1000000 / fetch_speed)) {
+    if (next_fetch < time(nullptr)) {
+      next_fetch = time(nullptr) + fetch_interval;
       printf("Fetching new data\n");
       fetch_l = 0;
       // Pull JSON from API
@@ -429,8 +432,7 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    if (screen_l > (1000000 / screen_speed)) {
-      screen_l = 0;
+    if (next_screen_update < time(nullptr)) {
 
       if (alt_screens.size() == 0) {
         current_screen = main_screen;
@@ -465,6 +467,30 @@ int main(int argc, char *argv[]) {
         if (affirmations[index].contains("message") && affirmations[index]["message"].is_string()) {
             message = affirmations[index]["message"].get<std::string>();
         }
+      } else if (current_screen == "comments") {
+        int index = rand() % affirmations.size();
+
+        if (comments[index].contains("message") && comments[index]["message"].is_string()) {
+            message = comments[index]["message"].get<std::string>();
+        }
+      } else if (current_screen == "secrets") {
+        int index = rand() % affirmations.size();
+
+        if (secrets[index].contains("message") && secrets[index]["message"].is_string()) {
+            message = secrets[index]["message"].get<std::string>();
+        }
+      } else if (current_screen == "importantMessage") {
+        message = important_message;
+      }
+
+      if (current_screen == "events") {
+        if (objects.size() > 0) {
+          // the next screen update should be whichever is earliest - the estimated time for the next event, or the current time plus 30 seconds
+          next_screen_update = std::min(objects[0].estimated_time, time(nullptr) + 30);
+        } else {
+          next_screen_update = time(nullptr) + 30;
+      } else {
+        next_screen_update = time(nullptr) + screen_update_interval;
       }
 
     }
@@ -565,21 +591,7 @@ int main(int argc, char *argv[]) {
                             letter_spacing);
         line_offset += font.height() + line_spacing;
       }
-    } else if (current_screen == "jokes") {
-      line_offset += font.height() + line_spacing;
-
-      middle_length = rgb_matrix::DrawText(offscreen, font,
-        x_mid, y + font.baseline() + line_offset,
-        color, nullptr,
-        message.c_str(), letter_spacing);
-
-      if (scroll_l > (1000000 / scroll_speed)) {
-        if (scroll_speed > 0 && --x_mid + middle_length < 0) {
-          x_mid = x_mid_orig;
-        }
-        scroll_l = 0;
-      }
-    } else if (current_screen == "affirmations") {
+    } else if (current_screen == "jokes" || current_screen == "comments" || current_screen == "affirmations" || current_screen == "secrets" || current_screen == "importantMessage") {
       line_offset += font.height() + line_spacing;
 
       middle_length = rgb_matrix::DrawText(offscreen, font,
@@ -598,8 +610,6 @@ int main(int argc, char *argv[]) {
     // Atomic swap with double buffer
     offscreen = matrix->SwapOnVSync(offscreen);
     scroll_l++;
-    screen_l++;
-    fetch_l++;
 
     // usleep(delay_speed_usec);
   }
