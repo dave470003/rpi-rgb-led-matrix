@@ -152,7 +152,7 @@ int main(int argc, char *argv[]) {
     return usage(argv[0]);
   }
 
-  Color color(255, 255, 0);
+  Color color(250, 184, 0);
   Color bg_color(0, 0, 0);
   Color outline_color(0,0,0);
 
