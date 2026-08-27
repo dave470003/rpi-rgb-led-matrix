@@ -35,6 +35,19 @@ static json latest_api_data = json::object();
 static std::atomic<bool> new_api_data(false);
 static std::atomic<bool> api_thread_running(true);
 
+
+enum class EventTimeMode {
+  REAL_TIME,
+  TIME_ONLY,
+  DATETIME
+};
+
+struct EventTimeFilter {
+  EventTimeMode mode = EventTimeMode::REAL_TIME;
+  int seconds_since_midnight = 0;
+  time_t datetime = 0;
+};
+
 class ObjectData {
 public:
   std::string destination;
@@ -140,6 +153,116 @@ static int text_width(const rgb_matrix::Font &font, const std::string &text,
   return width;
 }
 
+static bool parse_time_only(const std::string &value, int *seconds_since_midnight) {
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
+  int consumed = 0;
+
+  if (sscanf(value.c_str(), "%d:%d:%d%n", &hour, &minute, &second, &consumed) == 3
+      && consumed == static_cast<int>(value.size())) {
+    // Parsed HH:MM:SS.
+  } else {
+    second = 0;
+    consumed = 0;
+    if (sscanf(value.c_str(), "%d:%d%n", &hour, &minute, &consumed) != 2
+        || consumed != static_cast<int>(value.size())) {
+      return false;
+    }
+  }
+
+  if (hour < 0 || hour > 23
+      || minute < 0 || minute > 59
+      || second < 0 || second > 59) {
+    return false;
+  }
+
+  *seconds_since_midnight = hour * 3600 + minute * 60 + second;
+  return true;
+}
+
+static bool parse_datetime_value(const std::string &value, time_t *result) {
+  const char *formats[] = {
+      "%Y-%m-%d %H:%M:%S",
+      "%Y-%m-%d %H:%M",
+      "%Y-%m-%dT%H:%M:%S",
+      "%Y-%m-%dT%H:%M"
+  };
+
+  for (const char *format : formats) {
+    struct tm parsed_tm = {};
+    parsed_tm.tm_isdst = -1;
+
+    char *end = strptime(value.c_str(), format, &parsed_tm);
+    if (end == nullptr) {
+      continue;
+    }
+
+    while (*end == ' ' || *end == '\t') {
+      ++end;
+    }
+
+    if (*end != '\0') {
+      continue;
+    }
+
+    const time_t parsed = mktime(&parsed_tm);
+    if (parsed == static_cast<time_t>(-1)) {
+      continue;
+    }
+
+    *result = parsed;
+    return true;
+  }
+
+  return false;
+}
+
+static bool parse_event_time_filter(const std::string &value,
+                                    EventTimeFilter *filter) {
+  int seconds_since_midnight = 0;
+  if (parse_time_only(value, &seconds_since_midnight)) {
+    filter->mode = EventTimeMode::TIME_ONLY;
+    filter->seconds_since_midnight = seconds_since_midnight;
+    filter->datetime = 0;
+    return true;
+  }
+
+  time_t datetime = 0;
+  if (parse_datetime_value(value, &datetime)) {
+    filter->mode = EventTimeMode::DATETIME;
+    filter->datetime = datetime;
+    filter->seconds_since_midnight = 0;
+    return true;
+  }
+
+  return false;
+}
+
+static bool event_is_future(const ObjectData &object,
+                            const EventTimeFilter &filter) {
+  if (object.estimated_time <= 0) {
+    return false;
+  }
+
+  if (filter.mode == EventTimeMode::DATETIME) {
+    return object.estimated_time > filter.datetime;
+  }
+
+  if (filter.mode == EventTimeMode::TIME_ONLY) {
+    struct tm event_tm;
+    localtime_r(&object.estimated_time, &event_tm);
+
+    const int event_seconds = event_tm.tm_hour * 3600
+        + event_tm.tm_min * 60
+        + event_tm.tm_sec;
+
+    return event_seconds > filter.seconds_since_midnight;
+  }
+
+  return object.estimated_time > time(nullptr);
+}
+
 static std::string first_event_key(const std::vector<ObjectData> &objects) {
   if (objects.empty()) {
     return "";
@@ -151,9 +274,9 @@ static std::string first_event_key(const std::vector<ObjectData> &objects) {
       + "|" + object.description;
 }
 
-static std::vector<ObjectData> build_events(const json &events) {
+static std::vector<ObjectData> build_events(const json &events,
+                                                  const EventTimeFilter &filter) {
   std::vector<ObjectData> objects;
-  const time_t now = time(nullptr);
 
   if (!events.is_array()) {
     return objects;
@@ -172,9 +295,9 @@ static std::vector<ObjectData> build_events(const json &events) {
     object.scheduled_time = get_time_value(event, "scheduled_time", "scheduled_ts");
     object.estimated_time = get_time_value(event, "estimated_time", "estimated_ts");
 
-    // Only future events are shown. The estimated time is the authoritative
-    // time for whether an event is still relevant.
-    if (object.estimated_time > now) {
+    // Only events after the selected filter time are shown. With no -t
+    // override, this means events whose estimated time is after real now.
+    if (event_is_future(object, filter)) {
       objects.push_back(object);
     }
   }
@@ -375,6 +498,9 @@ static int usage(const char *progname) {
           "\t-S <letter-spacing>  : Extra spacing between letters\n"
           "\t-v <pixels/second>   : Scroll speed (Default: 20)\n"
           "\t-r <seconds>         : API refresh interval (Default: 5)\n"
+          "\t-t <time|datetime>   : Event filter override. HH:MM[:SS] compares\n"
+          "\t                      : by time-of-day; YYYY-MM-DD HH:MM[:SS] (or T)\n"
+          "\t                      : compares against an exact UK datetime.\n"
           "\t-C <r,g,b>           : Text colour (Default: 250,184,0)\n"
           "\t-B <r,g,b>           : Background colour (Default: 0,0,0)\n"
           "\n");
@@ -409,9 +535,10 @@ int main(int argc, char *argv[]) {
 
   double scroll_speed = 20.0;  // pixels per second
   int fetch_interval = 5;      // seconds
+  EventTimeFilter event_time_filter;
 
   int opt;
-  while ((opt = getopt(argc, argv, "x:y:f:C:B:O:s:S:v:r:")) != -1) {
+  while ((opt = getopt(argc, argv, "x:y:f:C:B:O:s:S:v:r:t:")) != -1) {
     switch (opt) {
       case 'x':
         x_orig = atoi(optarg);
@@ -439,6 +566,15 @@ int main(int argc, char *argv[]) {
         fetch_interval = atoi(optarg);
         if (fetch_interval < 1) {
           fprintf(stderr, "API refresh interval must be at least 1 second.\n");
+          return usage(argv[0]);
+        }
+        break;
+      case 't':
+        if (!parse_event_time_filter(optarg, &event_time_filter)) {
+          fprintf(stderr,
+                  "Invalid event time '%s'. Use HH:MM[:SS] or "
+                  "YYYY-MM-DD HH:MM[:SS].\n",
+                  optarg);
           return usage(argv[0]);
         }
         break;
@@ -519,7 +655,7 @@ int main(int argc, char *argv[]) {
   std::string mode = get_string_or_empty(root, "mode");
   bool enable_secret_screen = root.value("enable_secret_screen", false);
 
-  std::vector<ObjectData> objects = build_events(events);
+  std::vector<ObjectData> objects = build_events(events, event_time_filter);
   std::vector<std::string> alt_screens = build_alt_screens(
       mode,
       important_message,
@@ -570,11 +706,14 @@ int main(int argc, char *argv[]) {
     const time_t now = time(nullptr);
 
     if (current_screen == "events") {
-      if (!objects.empty()) {
+      if (!objects.empty() && event_time_filter.mode == EventTimeMode::REAL_TIME) {
         next_screen_update = std::min(
             objects.front().estimated_time,
             now + event_screen_interval);
       } else {
+        // When using a fixed -t test time, event timestamps may be in the past
+        // relative to the Pi's real clock, so keep screen timing based on real
+        // elapsed runtime rather than the overridden event-filter time.
         next_screen_update = now + event_screen_interval;
       }
     } else {
@@ -643,7 +782,7 @@ int main(int argc, char *argv[]) {
       mode = get_string_or_empty(root, "mode");
       enable_secret_screen = root.value("enable_secret_screen", false);
 
-      objects = build_events(events);
+      objects = build_events(events, event_time_filter);
       main_screen = main_screen_for_mode(mode);
       alt_screens = build_alt_screens(
           mode,
@@ -663,18 +802,18 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    // Events can expire between API updates. Remove them immediately so an
-    // event whose estimated time has passed is never displayed.
-    {
+    // In normal mode, events expire as real time advances between API updates.
+    // With -t, the supplied test time is deliberately fixed, so the selected
+    // event set remains stable until the API data itself changes.
+    if (event_time_filter.mode == EventTimeMode::REAL_TIME) {
       const std::string old_first_event = first_event_key(objects);
-      const time_t now = time(nullptr);
 
       objects.erase(
           std::remove_if(
               objects.begin(),
               objects.end(),
-              [now](const ObjectData &object) {
-                return object.estimated_time <= now;
+              [&](const ObjectData &object) {
+                return !event_is_future(object, event_time_filter);
               }),
           objects.end());
 
@@ -808,7 +947,18 @@ int main(int argc, char *argv[]) {
               color, NULL, time_text.c_str(), letter_spacing);
         }
       } else {
-        // No future events: retain the clock display on the event screen.
+        // No remaining events: show a standard departure-board empty state.
+        // The message is centred rather than scrolled because it comfortably
+        // fits across the three-panel display.
+        const std::string no_departures_text = "No scheduled departures";
+        const int no_departures_x = (screen_width
+            - text_width(font, no_departures_text, letter_spacing)) / 2;
+
+        rgb_matrix::DrawText(
+            offscreen, font,
+            no_departures_x, y + font.baseline() + line_offset,
+            color, NULL, no_departures_text.c_str(), letter_spacing);
+
         line_offset += font.height() + line_spacing;
 
         char time_buffer[32];
