@@ -9,17 +9,32 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <vector>
-#include <string>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <curl/curl.h>
+#include <fstream>
 #include <iostream>
+#include <mutex>
 #include <nlohmann/json.hpp>
+#include <string>
+#include <thread>
+#include <vector>
 
 using namespace rgb_matrix;
 using json = nlohmann::json;
 
-// create objectData class. holds two text fields and twod atetime fields.
+static const char *API_URL = "https://freddyanddavid.com/api/config";
+static const char *CACHE_FILE = "config-cache.json";
+
+static volatile sig_atomic_t interrupt_received = 0;
+
+static std::mutex api_mutex;
+static json latest_api_data = json::object();
+static std::atomic<bool> new_api_data(false);
+static std::atomic<bool> api_thread_running(true);
+
 class ObjectData {
 public:
   std::string destination;
@@ -27,40 +42,26 @@ public:
   time_t scheduled_time;
   time_t estimated_time;
 
+  std::string get_scheduled_time() const {
+    char buf[32];
+    struct tm tm_info;
+    localtime_r(&scheduled_time, &tm_info);
+    strftime(buf, sizeof(buf), "%H:%M", &tm_info);
+    return std::string(buf);
+  }
 
-// need a function to return scheduled_time as a formatted string, based on the BST timezone
-std::string get_scheduled_time() {
-  char buf[32];
-  struct tm tm_info;
-
-  // Force UK timezone (handles GMT/BST automatically)
-  setenv("TZ", "Europe/London", 1);
-  tzset();  // reload timezone info
-
-  localtime_r(&scheduled_time, &tm_info);
-  strftime(buf, sizeof(buf), "%H:%M", &tm_info);
-
-  return std::string(buf);
-}
-// need a function to return estimated_time as a formatted string
-std::string get_estimated_time() {
-  char buf[32];
-  struct tm tm_info;
-
-  // Force UK timezone (handles GMT/BST automatically)
-  setenv("TZ", "Europe/London", 1);
-  tzset();  // reload timezone info
-
-  localtime_r(&estimated_time, &tm_info);
-  strftime(buf, sizeof(buf), "%H:%M", &tm_info);
-
-  return std::string(buf);
-}
+  std::string get_estimated_time() const {
+    char buf[32];
+    struct tm tm_info;
+    localtime_r(&estimated_time, &tm_info);
+    strftime(buf, sizeof(buf), "%H:%M", &tm_info);
+    return std::string(buf);
+  }
 };
 
-volatile bool interrupt_received = false;
 static void InterruptHandler(int signo) {
-  interrupt_received = true;
+  (void)signo;
+  interrupt_received = 1;
 }
 
 static bool parseColor(Color *c, const char *str) {
@@ -69,92 +70,336 @@ static bool parseColor(Color *c, const char *str) {
 
 static bool FullSaturation(const Color &c) {
   return (c.r == 0 || c.r == 255)
-    && (c.g == 0 || c.g == 255)
-    && (c.b == 0 || c.b == 255);
+      && (c.g == 0 || c.g == 255)
+      && (c.b == 0 || c.b == 255);
 }
 
-size_t WriteMemoryCallback(void* contents, size_t size, size_t nmemb, void* userp) {
-  ((std::string*)userp)->append((char*)contents, size * nmemb);
+static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb,
+                                  void *userp) {
+  static_cast<std::string *>(userp)->append(
+      static_cast<char *>(contents), size * nmemb);
   return size * nmemb;
 }
 
-/**
- * Entry point for the program. Initializes the RGB LED matrix with options
- * parsed from command line flags and creates a Train instance to display
- * scrolling text. The program runs the Train instance to show text on the
- * LED matrix, then stops and cleans up resources before exiting.
- *
- * @param argc Number of command-line arguments.
- * @param argv Array of command-line arguments.
- * @return Exit code for the program, 0 on success, 1 if initialization fails.
- */
-
-static int usage(const char *progname) {
-  fprintf(stderr, "Hello if you're using this! I recommend you use the following options: --led-no-hardware-pulse --led-no-hardware-pulse --led-gpio-mapping=adafruit-hat examples-api-use/runtext.ppm --led-cols=192 --led-slowdown-gpio=2\n");
-  fprintf(stderr, "usage: %s [options]\n", progname);
-  fprintf(stderr, "Reads text from stdin and displays it. "
-          "Empty string: clear screen\n");
-  fprintf(stderr, "Options:\n");
-  fprintf(stderr,
-          "\t                    Can be provided multiple times for multiple "
-          "lines\n"
-          "\t-f <font-file>    : Use given font.\n"
-          "\t-x <x-origin>     : X-Origin of displaying text (Default: 0)\n"
-          "\t-y <y-origin>     : Y-Origin of displaying text (Default: 0)\n"
-          "\t-s <line-spacing> : Extra spacing between lines when multiple -d given\n"
-          "\t-S <spacing>      : Extra spacing between letters (Default: 0)\n"
-          "\t-C <r,g,b>        : Color. Default 255,255,0\n"
-          "\t-B <r,g,b>        : Background-Color. Default 0,0,0\n"
-          "\n"
-          );
-  rgb_matrix::PrintMatrixFlags(stderr);
-  return 1;
+static std::string get_string_or_empty(const json &j, const std::string &key) {
+  if (j.contains(key) && j[key].is_string()) {
+    return j[key].get<std::string>();
+  }
+  return "";
 }
 
-// create a new function called "pull_from_api"
-json pull_from_api() {
+static time_t get_time_value(const json &event, const char *primary_key,
+                             const char *fallback_key) {
+  try {
+    if (event.contains(primary_key) && event[primary_key].is_number()) {
+      return event[primary_key].get<time_t>();
+    }
+    if (event.contains(fallback_key) && event[fallback_key].is_number()) {
+      return event[fallback_key].get<time_t>();
+    }
+  } catch (const json::exception &) {
+  }
+
+  return 0;
+}
+
+static std::string get_item_message(const json &item) {
+  if (item.is_string()) {
+    return item.get<std::string>();
+  }
+
+  if (item.is_object()
+      && item.contains("message")
+      && item["message"].is_string()) {
+    return item["message"].get<std::string>();
+  }
+
+  return "";
+}
+
+static std::string get_random_message(const json &items) {
+  if (!items.is_array() || items.empty()) {
+    return "";
+  }
+
+  const size_t index = static_cast<size_t>(rand()) % items.size();
+  return get_item_message(items[index]);
+}
+
+static int text_width(const rgb_matrix::Font &font, const std::string &text,
+                      int letter_spacing) {
+  int width = 0;
+
+  for (size_t i = 0; i < text.size(); ++i) {
+    width += font.CharacterWidth(text[i]);
+    if (i + 1 < text.size()) {
+      width += letter_spacing;
+    }
+  }
+
+  return width;
+}
+
+static std::string first_event_key(const std::vector<ObjectData> &objects) {
+  if (objects.empty()) {
+    return "";
+  }
+
+  const ObjectData &object = objects.front();
+  return std::to_string(static_cast<long long>(object.scheduled_time))
+      + "|" + object.destination
+      + "|" + object.description;
+}
+
+static std::vector<ObjectData> build_events(const json &events) {
+  std::vector<ObjectData> objects;
+  const time_t now = time(nullptr);
+
+  if (!events.is_array()) {
+    return objects;
+  }
+
+  for (const auto &event : events) {
+    if (!event.is_object()) {
+      continue;
+    }
+
+    ObjectData object;
+    object.destination = event.value("destination", "");
+    object.description = event.value("description", "");
+
+    // Support both the current *_time names and the *_ts names from the API spec.
+    object.scheduled_time = get_time_value(event, "scheduled_time", "scheduled_ts");
+    object.estimated_time = get_time_value(event, "estimated_time", "estimated_ts");
+
+    // Only future events are shown. The estimated time is the authoritative
+    // time for whether an event is still relevant.
+    if (object.estimated_time > now) {
+      objects.push_back(object);
+    }
+  }
+
+  std::sort(objects.begin(), objects.end(),
+            [](const ObjectData &a, const ObjectData &b) {
+              return a.estimated_time < b.estimated_time;
+            });
+
+  return objects;
+}
+
+static bool fetch_from_api(json &result) {
   std::string json_string;
-  curl_global_init(CURL_GLOBAL_DEFAULT);
-  CURL* curl = curl_easy_init();
+  CURL *curl = curl_easy_init();
 
-  if (curl) {
-      std::string url = "https://freddyanddavid.com/api/config";
-      curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &json_string);
+  if (!curl) {
+    return false;
+  }
 
-      CURLcode res = curl_easy_perform(curl);
-      if (res != CURLE_OK) {
-          std::cerr << "cURL error: " << curl_easy_strerror(res) << std::endl;
+  curl_easy_setopt(curl, CURLOPT_URL, API_URL);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &json_string);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 1500L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 4000L);
+  curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+  const CURLcode res = curl_easy_perform(curl);
+  curl_easy_cleanup(curl);
+
+  if (res != CURLE_OK) {
+    std::cerr << "API fetch failed: " << curl_easy_strerror(res) << std::endl;
+    return false;
+  }
+
+  try {
+    result = json::parse(json_string);
+    return true;
+  } catch (const json::exception &e) {
+    std::cerr << "API returned invalid JSON: " << e.what() << std::endl;
+    return false;
+  }
+}
+
+static bool save_cache(const json &data) {
+  const std::string cache_file(CACHE_FILE);
+  const std::string temporary_file = cache_file + ".tmp";
+
+  try {
+    {
+      std::ofstream file(temporary_file.c_str(), std::ios::out | std::ios::trunc);
+      if (!file) {
+        return false;
       }
 
-      curl_easy_cleanup(curl);
-  }
-  curl_global_cleanup();
+      file << data.dump(2);
+      file.flush();
 
-  // Parse JSON
-  json root;
+      if (!file) {
+        return false;
+      }
+    }
+
+    if (std::rename(temporary_file.c_str(), cache_file.c_str()) != 0) {
+      std::remove(temporary_file.c_str());
+      return false;
+    }
+
+    return true;
+  } catch (const std::exception &e) {
+    std::cerr << "Could not save API cache: " << e.what() << std::endl;
+    std::remove(temporary_file.c_str());
+    return false;
+  }
+}
+
+static bool load_cache(json &data) {
   try {
-      printf("JSON: %s\n", json_string.c_str());
-      root = json::parse(json_string);
-  } catch (json::parse_error& e) {
-      std::cerr << "Failed to parse JSON: " << e.what() << std::endl;
+    std::ifstream file(CACHE_FILE);
+    if (!file) {
+      return false;
+    }
+
+    json cached;
+    file >> cached;
+
+    if (!cached.is_object()) {
+      return false;
+    }
+
+    data = cached;
+    return true;
+  } catch (const std::exception &e) {
+    std::cerr << "Could not load API cache: " << e.what() << std::endl;
+    return false;
+  }
+}
+
+static void api_fetch_loop(int interval_seconds) {
+  while (api_thread_running.load()) {
+    json fetched;
+
+    if (fetch_from_api(fetched)) {
+      // Saving happens on the background thread too, so neither the network
+      // nor the disk write can pause the display/render loop.
+      if (!save_cache(fetched)) {
+        std::cerr << "Warning: fetched API data but could not update cache"
+                  << std::endl;
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(api_mutex);
+        latest_api_data = fetched;
+      }
+
+      new_api_data.store(true);
+    }
+
+    // Sleep in short chunks so Ctrl+C shutdown remains responsive.
+    const int sleep_chunks = interval_seconds * 10;
+    for (int i = 0; i < sleep_chunks && api_thread_running.load(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+}
+
+static std::vector<std::string> build_alt_screens(
+    const std::string &mode,
+    const std::string &important_message,
+    const json &jokes,
+    const json &affirmations,
+    const json &comments,
+    const json &secrets,
+    bool enable_secret_screen) {
+
+  std::vector<std::string> alt_screens;
+
+  if (mode == "events_only" || mode == "important_message_only") {
+    return alt_screens;
   }
 
-  return root;
+  // Preserve the existing behaviour: an important message takes over the
+  // alternate slot while one is present.
+  if (!important_message.empty()) {
+    alt_screens.push_back("importantMessage");
+    return alt_screens;
+  }
+
+  if (jokes.is_array() && !jokes.empty()) {
+    alt_screens.push_back("jokes");
+  }
+
+  if (affirmations.is_array() && !affirmations.empty()) {
+    alt_screens.push_back("affirmations");
+  }
+
+  if (comments.is_array() && !comments.empty()) {
+    alt_screens.push_back("comments");
+  }
+
+  if (enable_secret_screen && secrets.is_array() && !secrets.empty()) {
+    alt_screens.push_back("secrets");
+  }
+
+  // slideshow/gifs are deliberately not added here yet: the original file
+  // added those screen names to the rotation but had no renderer for them,
+  // which resulted in blank screens.
+
+  return alt_screens;
+}
+
+static std::string main_screen_for_mode(const std::string &mode) {
+  if (mode == "important_message_only") {
+    return "importantMessage";
+  }
+
+  return "events";
+}
+
+static bool is_text_screen(const std::string &screen) {
+  return screen == "jokes"
+      || screen == "comments"
+      || screen == "affirmations"
+      || screen == "secrets"
+      || screen == "importantMessage";
+}
+
+static int usage(const char *progname) {
+  fprintf(stderr, "usage: %s [options]\n", progname);
+  fprintf(stderr,
+          "Options:\n"
+          "\t-f <font-file>       : Use given BDF font.\n"
+          "\t-x <x-origin>        : X origin (Default: 0)\n"
+          "\t-y <y-origin>        : Y origin (Default: 0)\n"
+          "\t-s <line-spacing>    : Extra spacing between lines\n"
+          "\t-S <letter-spacing>  : Extra spacing between letters\n"
+          "\t-v <pixels/second>   : Scroll speed (Default: 20)\n"
+          "\t-r <seconds>         : API refresh interval (Default: 5)\n"
+          "\t-C <r,g,b>           : Text colour (Default: 250,184,0)\n"
+          "\t-B <r,g,b>           : Background colour (Default: 0,0,0)\n"
+          "\n");
+  rgb_matrix::PrintMatrixFlags(stderr);
+  return 1;
 }
 
 int main(int argc, char *argv[]) {
   RGBMatrix::Options matrix_options;
   rgb_matrix::RuntimeOptions runtime_opt;
+
   if (!rgb_matrix::ParseOptionsFromFlags(&argc, &argv,
-                                         &matrix_options, &runtime_opt)) {
+                                          &matrix_options, &runtime_opt)) {
     return usage(argv[0]);
   }
 
+  // Set the process timezone once. Europe/London handles GMT/BST automatically.
+  setenv("TZ", "Europe/London", 1);
+  tzset();
+
+  srand(static_cast<unsigned int>(time(nullptr)));
+
   Color color(250, 184, 0);
   Color bg_color(0, 0, 0);
-  Color outline_color(0,0,0);
+  Color outline_color(0, 0, 0);
 
   const char *bdf_font_file = NULL;
   int x_orig = 0;
@@ -162,28 +407,55 @@ int main(int argc, char *argv[]) {
   int letter_spacing = 0;
   int line_spacing = 0;
 
+  double scroll_speed = 20.0;  // pixels per second
+  int fetch_interval = 5;      // seconds
+
   int opt;
-  while ((opt = getopt(argc, argv, "x:y:f:C:B:O:s:S:d:")) != -1) {
+  while ((opt = getopt(argc, argv, "x:y:f:C:B:O:s:S:v:r:")) != -1) {
     switch (opt) {
-    case 'x': x_orig = atoi(optarg); break;
-    case 'y': y_orig = atoi(optarg); break;
-    case 'f': bdf_font_file = strdup(optarg); break;
-    case 's': line_spacing = atoi(optarg); break;
-    case 'S': letter_spacing = atoi(optarg); break;
-    case 'C':
-      if (!parseColor(&color, optarg)) {
-        fprintf(stderr, "Invalid color spec: %s\n", optarg);
+      case 'x':
+        x_orig = atoi(optarg);
+        break;
+      case 'y':
+        y_orig = atoi(optarg);
+        break;
+      case 'f':
+        bdf_font_file = strdup(optarg);
+        break;
+      case 's':
+        line_spacing = atoi(optarg);
+        break;
+      case 'S':
+        letter_spacing = atoi(optarg);
+        break;
+      case 'v':
+        scroll_speed = atof(optarg);
+        if (scroll_speed <= 0.0) {
+          fprintf(stderr, "Scroll speed must be greater than zero.\n");
+          return usage(argv[0]);
+        }
+        break;
+      case 'r':
+        fetch_interval = atoi(optarg);
+        if (fetch_interval < 1) {
+          fprintf(stderr, "API refresh interval must be at least 1 second.\n");
+          return usage(argv[0]);
+        }
+        break;
+      case 'C':
+        if (!parseColor(&color, optarg)) {
+          fprintf(stderr, "Invalid color spec: %s\n", optarg);
+          return usage(argv[0]);
+        }
+        break;
+      case 'B':
+        if (!parseColor(&bg_color, optarg)) {
+          fprintf(stderr, "Invalid background color spec: %s\n", optarg);
+          return usage(argv[0]);
+        }
+        break;
+      default:
         return usage(argv[0]);
-      }
-      break;
-    case 'B':
-      if (!parseColor(&bg_color, optarg)) {
-        fprintf(stderr, "Invalid background color spec: %s\n", optarg);
-        return usage(argv[0]);
-      }
-      break;
-    default:
-      return usage(argv[0]);
     }
   }
 
@@ -192,9 +464,6 @@ int main(int argc, char *argv[]) {
     return usage(argv[0]);
   }
 
-  /*
-   * Load font. This needs to be a filename with a bdf bitmap font.
-   */
   rgb_matrix::Font font;
   if (!font.LoadFont(bdf_font_file)) {
     fprintf(stderr, "Couldn't load font '%s'\n", bdf_font_file);
@@ -203,424 +472,422 @@ int main(int argc, char *argv[]) {
 
   rgb_matrix::Font time_font;
   if (!time_font.LoadFont("fonts/dotbold.bdf")) {
-    fprintf(stderr, "Couldn't load time font fonts/dotbold.bdf");
+    fprintf(stderr, "Couldn't load time font fonts/dotbold.bdf\n");
     return 1;
   }
 
   RGBMatrix *matrix = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
-  if (matrix == NULL)
+  if (matrix == NULL) {
     return 1;
+  }
 
   const bool all_extreme_colors = (matrix_options.brightness == 100)
-    && FullSaturation(color)
-    && FullSaturation(bg_color)
-    && FullSaturation(outline_color);
-  if (all_extreme_colors)
-    matrix->SetPWMBits(1);
+      && FullSaturation(color)
+      && FullSaturation(bg_color)
+      && FullSaturation(outline_color);
 
-  const int x = x_orig;
-  int y = y_orig;
+  if (all_extreme_colors) {
+    matrix->SetPWMBits(1);
+  }
 
   FrameCanvas *offscreen = matrix->CreateFrameCanvas();
 
-  // Create a new canvas to be used with led_matrix_swap_on_vsync
-  // FrameCanvas *offscreen_canvas_middle = matrix->CreateFrameCanvas();
-
-  char text_buffer[256];
+  const int screen_width = offscreen->width();
+  const int x = x_orig;
+  const int y = y_orig;
+  const int scroll_start_x = screen_width + 5;
 
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
 
-  auto get_string_or_empty = [](const json& j, const std::string& key) -> std::string {
-    if (j.contains(key) && !j[key].is_null()) return j[key].get<std::string>();
-    return "";
-  };
+  // Start from the most recent good response saved on disk. There is no
+  // synchronous network request here, so startup/display never waits for CURL.
+  json root = json::object();
+  if (load_cache(root)) {
+    std::cout << "Loaded cached API configuration" << std::endl;
+  }
 
-  time_t next_screen_update = time(nullptr);
-  time_t next_fetch = time(nullptr);
-
-  // Pull JSON from API
-  json root = pull_from_api();
-
-  // Extract arrays and values
   json jokes = root.value("jokes", json::array());
   json affirmations = root.value("affirmations", json::array());
   json events = root.value("events", json::array());
   json slideshow = root.value("slideshow", json::array());
   json gifs = root.value("gifs", json::array());
   json comments = root.value("comments", json::array());
-  std::string important_message = get_string_or_empty(root, "importantMessage");
-  std::string mode = get_string_or_empty(root, "mode");
   json secrets = root.value("secrets", json::array());
 
-  std::string main_screen;
-  std::string current_screen;
-  std::string last_alt_screen;
-  // make an array called alt_screens;
-  std::vector<std::string> alt_screens;
+  std::string important_message = get_string_or_empty(root, "importantMessage");
+  std::string mode = get_string_or_empty(root, "mode");
+  bool enable_secret_screen = root.value("enable_secret_screen", false);
 
+  std::vector<ObjectData> objects = build_events(events);
+  std::vector<std::string> alt_screens = build_alt_screens(
+      mode,
+      important_message,
+      jokes,
+      affirmations,
+      comments,
+      secrets,
+      enable_secret_screen);
+
+  std::string main_screen = main_screen_for_mode(mode);
+  std::string current_screen = main_screen;
+  std::string last_alt_screen;
   std::string message;
 
-  //switch on mode
-  if (mode == "events_only") {
-    main_screen = "events";
-  } else if (mode == "important_message_only") {
-    main_screen = "importantMessage";
-  } else {
-    main_screen = "events";
+  const int screen_update_interval = 15;
+  const int event_screen_interval = 30;
 
-    //if important_message is not empty
-    if (!important_message.empty()) {
-      alt_screens.push_back("importantMessage");
-    } else {
-      if (jokes.size() > 0) {
-        alt_screens.push_back("jokes");
-      }
-      if (affirmations.size() > 0) {
-        alt_screens.push_back("affirmations");
-      }
-      if (slideshow.size() > 0) {
-        alt_screens.push_back("slideshow");
-      }
-      if (gifs.size() > 0) {
-        alt_screens.push_back("gifs");
-      }
-      if (comments.size() > 0) {
-        alt_screens.push_back("comments");
-      }
-      if (secrets.size() > 0) {
-        alt_screens.push_back("secrets");
-      }
-    }
-  }
-
-  current_screen = main_screen;
-
-  // Convert events to ObjectData vector
-  std::vector<ObjectData> objects;
-  for (auto& event : events) {
-      ObjectData object;
-      object.destination = event.value("destination", "");
-      object.description = event.value("description", "");
-      object.scheduled_time = event.value("scheduled_time", 0);
-      object.estimated_time = event.value("estimated_time", 0);
-      objects.push_back(object);
-  }
-
-  time_t now = time(nullptr);
-
-  objects.erase(std::remove_if(objects.begin(), objects.end(), [now](const ObjectData& object) {
-    return object.estimated_time < now;
-  }), objects.end());
-
-  /* x_origin is set by default just right of the screen */
-  const int x_mid_default_start = (matrix_options.chain_length
-    * matrix_options.cols) + 5;
-  int x_mid_orig = x_mid_default_start;
-  int scroll_speed = 100000;
-
-  int delay_speed_usec = 1000000;
-  if (scroll_speed > 0) {
-    delay_speed_usec = 1000000 / scroll_speed / font.CharacterWidth('W');
-  } else if (x_mid_orig == x_mid_default_start) {
-    // There would be no scrolling, so text would never appear. Move to front.
-    x_mid_orig = 0;
-  }
-
-  int x_mid = x_mid_orig;
+  double scroll_position = static_cast<double>(scroll_start_x);
+  bool scroll_completed_pass = false;
   int middle_length = 0;
+  time_t next_screen_update = time(nullptr);
 
-  int screen_update_interval = 15;
-  int fetch_interval = 60;
-  // add a string variable called 'line'
-  std::string line;
+  auto select_message_for_screen = [&]() -> std::string {
+    if (current_screen == "jokes") {
+      return get_random_message(jokes);
+    }
 
-  // an array of object data
-  // std::vector<ObjectData> objects;
+    if (current_screen == "affirmations") {
+      return get_random_message(affirmations);
+    }
 
-  // // push a new objectData to objects
-  // objects.push_back(ObjectData{"Leeds", "This train is formed of 4 carriages. Calling at: Horsforth, Longlevens, Elmore Court, Tottenham, Monaco and the Moon. Doesn't stop at Leeds.", time(nullptr), time(nullptr)});
+    if (current_screen == "comments") {
+      return get_random_message(comments);
+    }
 
-  // sort objects by scheduled time
-  std::sort(objects.begin(), objects.end(), [](const ObjectData& a, const ObjectData& b) {
-    return a.scheduled_time < b.scheduled_time;
-  });
+    if (current_screen == "secrets") {
+      return get_random_message(secrets);
+    }
 
-  // filter objects that have an estimated time in the future from a given date
-  // set the given date as 2026-09-05 14:20
-  // Force UK timezone (handles GMT/BST automatically)
-  setenv("TZ", "Europe/London", 1);
-  tzset();  // reload timezone info
+    if (current_screen == "importantMessage") {
+      return important_message;
+    }
 
-  now = time(nullptr);
-  struct tm now_tm = *localtime(&now);
-  now_tm.tm_year = 2026 - 1900;
-  now_tm.tm_mon = 9 - 1;
-  now_tm.tm_mday = 5;
-  now_tm.tm_hour = 15;
-  now_tm.tm_min = 25;
-  now = mktime(&now_tm);
+    return "";
+  };
 
-  int scroll_l = 0;
+  auto set_screen_deadline = [&]() {
+    const time_t now = time(nullptr);
+
+    if (current_screen == "events") {
+      if (!objects.empty()) {
+        next_screen_update = std::min(
+            objects.front().estimated_time,
+            now + event_screen_interval);
+      } else {
+        next_screen_update = now + event_screen_interval;
+      }
+    } else {
+      next_screen_update = now + screen_update_interval;
+    }
+  };
+
+  auto reset_scroll = [&]() {
+    scroll_position = static_cast<double>(scroll_start_x);
+    scroll_completed_pass = false;
+    middle_length = 0;
+  };
+
+  auto enter_screen = [&]() {
+    reset_scroll();
+    message = select_message_for_screen();
+    set_screen_deadline();
+  };
+
+  enter_screen();
+
+  // Initialise libcurl once for the process, then let the background thread own
+  // all HTTP activity.
+  bool curl_available = (curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK);
+  std::thread api_thread;
+
+  if (curl_available) {
+    api_thread = std::thread(api_fetch_loop, fetch_interval);
+  } else {
+    std::cerr << "Could not initialise CURL; continuing with cached data"
+              << std::endl;
+  }
+
+  auto last_frame_time = std::chrono::steady_clock::now();
 
   while (!interrupt_received) {
-    offscreen->Fill(bg_color.r, bg_color.g, bg_color.b);
+    const auto frame_time = std::chrono::steady_clock::now();
+    double elapsed_seconds = std::chrono::duration<double>(
+        frame_time - last_frame_time).count();
+    last_frame_time = frame_time;
 
-    int line_offset = 0;
+    // Avoid a large scroll jump if the process is suspended/debugged.
+    elapsed_seconds = std::max(0.0, std::min(elapsed_seconds, 0.25));
 
-    if (next_fetch < time(nullptr)) {
-      next_fetch = time(nullptr) + fetch_interval;
-      printf("Fetching new data\n");
-      // Pull JSON from API
-      root = pull_from_api();
+    // Apply a completed background fetch. This is just a memory copy under a
+    // mutex; CURL and cache writes never happen on the render thread.
+    if (new_api_data.exchange(false)) {
+      json new_root;
 
-      // Extract arrays and values
+      {
+        std::lock_guard<std::mutex> lock(api_mutex);
+        new_root = latest_api_data;
+      }
+
+      const std::string old_first_event = first_event_key(objects);
+
+      root = new_root;
       jokes = root.value("jokes", json::array());
       affirmations = root.value("affirmations", json::array());
       events = root.value("events", json::array());
       slideshow = root.value("slideshow", json::array());
       gifs = root.value("gifs", json::array());
       comments = root.value("comments", json::array());
+      secrets = root.value("secrets", json::array());
       important_message = get_string_or_empty(root, "importantMessage");
       mode = get_string_or_empty(root, "mode");
-      secrets = root.value("secrets", json::array());
+      enable_secret_screen = root.value("enable_secret_screen", false);
 
-      // Convert events to ObjectData vector
-      for (auto& event : events) {
-          ObjectData object;
-          object.destination = event.value("destination", "");
-          object.description = event.value("description", "");
-          object.scheduled_time = event.value("scheduled_time", 0);
-          object.estimated_time = event.value("estimated_time", 0);
-          objects.push_back(object);
-      }
+      objects = build_events(events);
+      main_screen = main_screen_for_mode(mode);
+      alt_screens = build_alt_screens(
+          mode,
+          important_message,
+          jokes,
+          affirmations,
+          comments,
+          secrets,
+          enable_secret_screen);
 
-      time_t now = time(nullptr);
-
-      //empty alt_screens
-      alt_screens.clear();
-
-      objects.erase(std::remove_if(objects.begin(), objects.end(), [now](const ObjectData& object) {
-        return object.estimated_time < now;
-      }), objects.end());
-
-      //switch on mode
-      if (mode == "events_only") {
-        main_screen = "events";
-      } else if (mode == "important_message_only") {
-        main_screen = "importantMessage";
-      } else {
-        main_screen = "events";
-
-        //if important_message is not empty
-        if (!important_message.empty()) {
-          alt_screens.push_back("importantMessage");
-        } else {
-          if (jokes.size() > 0) {
-            alt_screens.push_back("jokes");
-          }
-          if (affirmations.size() > 0) {
-            alt_screens.push_back("affirmations");
-          }
-          if (slideshow.size() > 0) {
-            alt_screens.push_back("slideshow");
-          }
-          if (gifs.size() > 0) {
-            alt_screens.push_back("gifs");
-          }
-          if (comments.size() > 0) {
-            alt_screens.push_back("comments");
-          }
-          if (secrets.size() > 0) {
-            alt_screens.push_back("secrets");
-          }
-        }
+      // If the event at the top of the board changed, restart its description
+      // from the right so the new text is guaranteed a complete pass.
+      if (current_screen == "events"
+          && old_first_event != first_event_key(objects)) {
+        reset_scroll();
+        set_screen_deadline();
       }
     }
 
-    if (next_screen_update < time(nullptr)) {
+    // Events can expire between API updates. Remove them immediately so an
+    // event whose estimated time has passed is never displayed.
+    {
+      const std::string old_first_event = first_event_key(objects);
+      const time_t now = time(nullptr);
 
-      if (alt_screens.size() == 0) {
+      objects.erase(
+          std::remove_if(
+              objects.begin(),
+              objects.end(),
+              [now](const ObjectData &object) {
+                return object.estimated_time <= now;
+              }),
+          objects.end());
+
+      if (current_screen == "events"
+          && old_first_event != first_event_key(objects)) {
+        reset_scroll();
+        set_screen_deadline();
+      }
+    }
+
+    // A text screen may only change after its scrolling text has completely
+    // traversed the display at least once. The 15/30 second deadlines remain
+    // minimum durations, not hard cut-offs.
+    bool scroll_required = false;
+
+    if (current_screen == "events") {
+      scroll_required = !objects.empty() && !objects.front().description.empty();
+    } else if (is_text_screen(current_screen)) {
+      scroll_required = !message.empty();
+    }
+
+    const bool may_change_screen = !scroll_required || scroll_completed_pass;
+
+    if (time(nullptr) >= next_screen_update && may_change_screen) {
+      if (alt_screens.empty()) {
         current_screen = main_screen;
       } else if (current_screen != main_screen) {
         last_alt_screen = current_screen;
         current_screen = main_screen;
-        x_mid = x_mid_orig;
-      //} else if (last_alt_screen is empty
       } else if (last_alt_screen.empty()) {
-        current_screen = alt_screens[0];
-        x_mid = x_mid_orig;
+        current_screen = alt_screens.front();
       } else {
-        // find in array
-        auto it = std::find(alt_screens.begin(), alt_screens.end(), last_alt_screen);
-        if (it == alt_screens.end() || ++it == alt_screens.end()) {
-            current_screen = alt_screens[0];
+        auto it = std::find(
+            alt_screens.begin(), alt_screens.end(), last_alt_screen);
+
+        if (it == alt_screens.end()) {
+          current_screen = alt_screens.front();
         } else {
-            current_screen = *it;
+          ++it;
+          current_screen = (it == alt_screens.end())
+              ? alt_screens.front()
+              : *it;
         }
-        x_mid = x_mid_orig;
       }
 
-      if (current_screen == "jokes") {
-        int index = rand() % jokes.size();
-
-        if (jokes[index].contains("message") && jokes[index]["message"].is_string()) {
-            message = jokes[index]["message"].get<std::string>();
-        }
-      } else if (current_screen == "affirmations") {
-        int index = rand() % affirmations.size();
-
-        if (affirmations[index].contains("message") && affirmations[index]["message"].is_string()) {
-            message = affirmations[index]["message"].get<std::string>();
-        }
-      } else if (current_screen == "comments") {
-        int index = rand() % comments.size();
-        message = comments[index].get<std::string>();
-      } else if (current_screen == "secrets") {
-        int index = rand() % secrets.size();
-
-        if (secrets[index].contains("message") && secrets[index]["message"].is_string()) {
-            message = secrets[index]["message"].get<std::string>();
-        }
-      } else if (current_screen == "importantMessage") {
-        message = important_message;
-      }
-
-      if (current_screen == "events") {
-        if (objects.size() > 0) {
-          // the next screen update should be whichever is earliest - the estimated time for the next event, or the current time plus 30 seconds
-          next_screen_update = std::min(objects[0].estimated_time, time(nullptr) + 30);
-        } else {
-          next_screen_update = time(nullptr) + 30;
-        }
-      } else {
-        next_screen_update = time(nullptr) + screen_update_interval;
-      }
-
+      enter_screen();
+      last_frame_time = std::chrono::steady_clock::now();
+      elapsed_seconds = 0.0;
     }
+
+    offscreen->Fill(bg_color.r, bg_color.g, bg_color.b);
+
+    int line_offset = 0;
 
     if (current_screen == "events") {
-
-      // if objects has at least one object, grab the first one
       if (!objects.empty()) {
-        std::string sch_text_1 = "1st " + objects[0].get_scheduled_time();
-        strncpy(text_buffer, sch_text_1.c_str(), 192);
+        const ObjectData &first = objects[0];
 
-        rgb_matrix::DrawText(offscreen, font,
-                            x, y + font.baseline() + line_offset,
-                            color, NULL, text_buffer,
-                            letter_spacing);
+        const std::string scheduled_text = "1st " + first.get_scheduled_time();
+        rgb_matrix::DrawText(
+            offscreen, font,
+            x, y + font.baseline() + line_offset,
+            color, NULL, scheduled_text.c_str(), letter_spacing);
 
-        std::string dest_text_1 = objects[0].destination;
-        strncpy(text_buffer, dest_text_1.c_str(), 192);
+        rgb_matrix::DrawText(
+            offscreen, font,
+            x + 45, y + font.baseline() + line_offset,
+            color, NULL, first.destination.c_str(), letter_spacing);
 
-        rgb_matrix::DrawText(offscreen, font,
-                            x + 45, y + font.baseline() + line_offset,
-                            color, NULL, text_buffer,
-                            letter_spacing);
-
-        std::string est_text_1 = "Exp " + objects[0].get_estimated_time();
-        strncpy(text_buffer, est_text_1.c_str(), 192);
-
-        rgb_matrix::DrawText(offscreen, font,
-                            192 - 45, y + font.baseline() + line_offset,
-                            color, NULL, text_buffer,
-                            letter_spacing);
-        line_offset += font.height() + line_spacing;
-
-
-        line = objects[0].description;
-
-        // offscreen_canvas_middle->Fill(bg_color.r, bg_color.g, bg_color.b);
-        // length = holds how many pixels our text takes up
-        middle_length = rgb_matrix::DrawText(offscreen, font,
-                                      x_mid, y + font.baseline() + line_offset,
-                                      color, nullptr,
-                                      line.c_str(), letter_spacing);
+        const std::string estimated_text = "Exp " + first.get_estimated_time();
+        rgb_matrix::DrawText(
+            offscreen, font,
+            screen_width - 45, y + font.baseline() + line_offset,
+            color, NULL, estimated_text.c_str(), letter_spacing);
 
         line_offset += font.height() + line_spacing;
 
-        if (scroll_l > (1000000 / scroll_speed)) {
-          if (scroll_speed > 0 && --x_mid + middle_length < 0) {
-            x_mid = x_mid_orig;
+        if (!first.description.empty()) {
+          const int scroll_x = static_cast<int>(scroll_position);
+
+          middle_length = rgb_matrix::DrawText(
+              offscreen, font,
+              scroll_x, y + font.baseline() + line_offset,
+              color, nullptr, first.description.c_str(), letter_spacing);
+
+          scroll_position -= scroll_speed * elapsed_seconds;
+
+          if (scroll_position + middle_length < 0.0) {
+            scroll_completed_pass = true;
+            scroll_position = static_cast<double>(scroll_start_x);
           }
-          scroll_l = 0;
+        } else {
+          scroll_completed_pass = true;
         }
 
-        // if there's a second object, grab it
+        line_offset += font.height() + line_spacing;
+
         if (objects.size() > 1) {
-          std::string sch_text_1 = "2nd " + objects[1].get_scheduled_time();
-          strncpy(text_buffer, sch_text_1.c_str(), 192);
+          const ObjectData &second = objects[1];
 
-          rgb_matrix::DrawText(offscreen, font,
-                              x, y + font.baseline() + line_offset,
-                              color, NULL, text_buffer,
-                              letter_spacing);
+          const std::string scheduled_text_2 = "2nd " + second.get_scheduled_time();
+          rgb_matrix::DrawText(
+              offscreen, font,
+              x, y + font.baseline() + line_offset,
+              color, NULL, scheduled_text_2.c_str(), letter_spacing);
 
-          std::string dest_text_1 = objects[1].destination;
-          strncpy(text_buffer, dest_text_1.c_str(), 192);
+          rgb_matrix::DrawText(
+              offscreen, font,
+              x + 45, y + font.baseline() + line_offset,
+              color, NULL, second.destination.c_str(), letter_spacing);
 
-          rgb_matrix::DrawText(offscreen, font,
-                              x + 45, y + font.baseline() + line_offset,
-                              color, NULL, text_buffer,
-                              letter_spacing);
-
-          std::string est_text_1 = "Exp " + objects[1].get_estimated_time();
-          strncpy(text_buffer, est_text_1.c_str(), 192);
-
-          rgb_matrix::DrawText(offscreen, font,
-                              192 - 45, y + font.baseline() + line_offset,
-                              color, NULL, text_buffer,
-                              letter_spacing);
-          line_offset += font.height() + line_spacing;
+          const std::string estimated_text_2 = "Exp " + second.get_estimated_time();
+          rgb_matrix::DrawText(
+              offscreen, font,
+              screen_width - 45, y + font.baseline() + line_offset,
+              color, NULL, estimated_text_2.c_str(), letter_spacing);
         } else {
-          // display the current time
-          time_t now = time(nullptr);
-          strftime(text_buffer, sizeof(text_buffer), "%H:%M:%S", localtime(&now));
-          rgb_matrix::DrawText(offscreen, time_font,
-                              x + 58, y + time_font.baseline() + line_offset,
-                              color, NULL, text_buffer,
-                              letter_spacing);
-          line_offset += font.height() + line_spacing;
+          char time_buffer[32];
+          const time_t now = time(nullptr);
+          struct tm now_tm;
+          localtime_r(&now, &now_tm);
+          strftime(time_buffer, sizeof(time_buffer), "%H:%M:%S", &now_tm);
+
+          const std::string time_text(time_buffer);
+          const int time_x = (screen_width
+              - text_width(time_font, time_text, letter_spacing)) / 2;
+
+          rgb_matrix::DrawText(
+              offscreen, time_font,
+              time_x, y + time_font.baseline() + line_offset,
+              color, NULL, time_text.c_str(), letter_spacing);
         }
       } else {
-        // display the current time
-        time_t now = time(nullptr);
+        // No future events: retain the clock display on the event screen.
         line_offset += font.height() + line_spacing;
 
-        strftime(text_buffer, sizeof(text_buffer), "%H:%M:%S", localtime(&now));
-        rgb_matrix::DrawText(offscreen, time_font,
-                            x + 58, y + time_font.baseline() + line_offset,
-                            color, NULL, text_buffer,
-                            letter_spacing);
-        line_offset += font.height() + line_spacing;
+        char time_buffer[32];
+        const time_t now = time(nullptr);
+        struct tm now_tm;
+        localtime_r(&now, &now_tm);
+        strftime(time_buffer, sizeof(time_buffer), "%H:%M:%S", &now_tm);
+
+        const std::string time_text(time_buffer);
+        const int time_x = (screen_width
+            - text_width(time_font, time_text, letter_spacing)) / 2;
+
+        rgb_matrix::DrawText(
+            offscreen, time_font,
+            time_x, y + time_font.baseline() + line_offset,
+            color, NULL, time_text.c_str(), letter_spacing);
+
+        scroll_completed_pass = true;
       }
-    } else if (current_screen == "jokes" || current_screen == "comments" || current_screen == "affirmations" || current_screen == "secrets" || current_screen == "importantMessage") {
-      line_offset += font.height() + line_spacing;
+    } else if (is_text_screen(current_screen)) {
+      // Non-event screens always show the bold current time centred across the
+      // top, with the current message scrolling beneath it.
+      char time_buffer[32];
+      const time_t now = time(nullptr);
+      struct tm now_tm;
+      localtime_r(&now, &now_tm);
+      strftime(time_buffer, sizeof(time_buffer), "%H:%M:%S", &now_tm);
 
-      middle_length = rgb_matrix::DrawText(offscreen, font,
-        x_mid, y + font.baseline() + line_offset,
-        color, nullptr,
-        message.c_str(), letter_spacing);
+      const std::string time_text(time_buffer);
+      const int time_x = (screen_width
+          - text_width(time_font, time_text, letter_spacing)) / 2;
 
-      if (scroll_l > (1000000 / scroll_speed)) {
-        if (scroll_speed > 0 && --x_mid + middle_length < 0) {
-          x_mid = x_mid_orig;
+      rgb_matrix::DrawText(
+          offscreen, time_font,
+          time_x, y + time_font.baseline(),
+          color, NULL, time_text.c_str(), letter_spacing);
+
+      line_offset = time_font.height() + line_spacing;
+
+      if (!message.empty()) {
+        const int scroll_x = static_cast<int>(scroll_position);
+
+        middle_length = rgb_matrix::DrawText(
+            offscreen, font,
+            scroll_x, y + font.baseline() + line_offset,
+            color, nullptr, message.c_str(), letter_spacing);
+
+        scroll_position -= scroll_speed * elapsed_seconds;
+
+        if (scroll_position + middle_length < 0.0) {
+          scroll_completed_pass = true;
+          scroll_position = static_cast<double>(scroll_start_x);
         }
-        scroll_l = 0;
+      } else {
+        scroll_completed_pass = true;
       }
     }
 
-    // Atomic swap with double buffer
+    // Atomic swap with double buffering. SwapOnVSync also naturally paces the
+    // render loop to the matrix refresh rather than busy-waiting.
     offscreen = matrix->SwapOnVSync(offscreen);
-    scroll_l++;
-
-    // usleep(delay_speed_usec);
   }
 
-  // Finished. Shut down the RGB matrix.
+  api_thread_running.store(false);
+
+  if (api_thread.joinable()) {
+    api_thread.join();
+  }
+
+  if (curl_available) {
+    curl_global_cleanup();
+  }
+
   delete matrix;
 
-  write(STDOUT_FILENO, "\n", 1);  // Create a fresh new line after ^C on screen
+  if (bdf_font_file != NULL) {
+    free(const_cast<char *>(bdf_font_file));
+  }
+
+  write(STDOUT_FILENO, "\n", 1);
   return 0;
 }
