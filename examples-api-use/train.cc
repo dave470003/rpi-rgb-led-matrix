@@ -25,7 +25,7 @@
 using namespace rgb_matrix;
 using json = nlohmann::json;
 
-static const char *API_URL = "https://freddyanddavid.com/api/config";
+static const char *API_URL = "https://freddyanddavid.com/api/all";
 static const char *CACHE_FILE = "config-cache.json";
 
 static volatile sig_atomic_t interrupt_received = 0;
