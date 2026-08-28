@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <curl/curl.h>
 #include <fstream>
@@ -26,7 +27,7 @@ using namespace rgb_matrix;
 using json = nlohmann::json;
 
 static const char *API_URL = "https://freddyanddavid.com/api/all";
-static const char *CACHE_FILE = "config-cache.json";
+static const char *CACHE_FILE = "all-cache.json";
 
 static volatile sig_atomic_t interrupt_received = 0;
 
@@ -94,23 +95,141 @@ static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb,
   return size * nmemb;
 }
 
-static std::string get_string_or_empty(const json &j, const std::string &key) {
-  if (j.contains(key) && j[key].is_string()) {
-    return j[key].get<std::string>();
+static std::string get_config_string(const json &root, const std::string &key,
+                                     const std::string &default_value = "") {
+  if (!root.contains(key) || root[key].is_null()) {
+    return default_value;
   }
-  return "";
+
+  const json &value = root[key];
+
+  if (value.is_string()) {
+    return value.get<std::string>();
+  }
+
+  // /api/all exposes config values as objects such as:
+  // {"key":"mode","value":"all_screens"}
+  if (value.is_object()
+      && value.contains("value")
+      && value["value"].is_string()) {
+    return value["value"].get<std::string>();
+  }
+
+  return default_value;
+}
+
+static bool json_to_bool(const json &value, bool default_value = false) {
+  if (value.is_boolean()) {
+    return value.get<bool>();
+  }
+
+  if (value.is_number_integer()) {
+    return value.get<long long>() != 0;
+  }
+
+  if (value.is_string()) {
+    std::string text = value.get<std::string>();
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    if (text == "true" || text == "1" || text == "yes" || text == "on") {
+      return true;
+    }
+    if (text == "false" || text == "0" || text == "no" || text == "off" || text.empty()) {
+      return false;
+    }
+  }
+
+  return default_value;
+}
+
+static bool get_config_bool(const json &root, const std::string &key,
+                            bool default_value = false) {
+  if (!root.contains(key) || root[key].is_null()) {
+    return default_value;
+  }
+
+  const json &value = root[key];
+
+  if (value.is_object() && value.contains("value")) {
+    return json_to_bool(value["value"], default_value);
+  }
+
+  return json_to_bool(value, default_value);
+}
+
+static bool item_is_enabled(const json &item) {
+  // Older/cached data may not have an enabled field. Treat missing as enabled,
+  // but an explicit false value always removes the item from rotation.
+  if (!item.is_object() || !item.contains("enabled")) {
+    return true;
+  }
+
+  return json_to_bool(item["enabled"], false);
+}
+
+static json enabled_items_only(const json &items) {
+  json filtered = json::array();
+
+  if (!items.is_array()) {
+    return filtered;
+  }
+
+  for (const auto &item : items) {
+    if (item_is_enabled(item)) {
+      filtered.push_back(item);
+    }
+  }
+
+  return filtered;
+}
+
+static bool parse_iso8601_utc(const std::string &value, time_t *result) {
+  // Laravel's JSON timestamps from /api/all look like
+  // 2026-09-05T12:30:00.000000Z. Parse the UTC portion explicitly so BST is
+  // applied only when the timestamp is later formatted with localtime().
+  if (value.size() < 19) {
+    return false;
+  }
+
+  struct tm parsed_tm = {};
+  char *end = strptime(value.substr(0, 19).c_str(), "%Y-%m-%dT%H:%M:%S", &parsed_tm);
+  if (end == nullptr || *end != '\0') {
+    return false;
+  }
+
+  parsed_tm.tm_isdst = 0;
+  const time_t parsed = timegm(&parsed_tm);
+  if (parsed == static_cast<time_t>(-1)) {
+    return false;
+  }
+
+  *result = parsed;
+  return true;
 }
 
 static time_t get_time_value(const json &event, const char *primary_key,
                              const char *fallback_key) {
-  try {
-    if (event.contains(primary_key) && event[primary_key].is_number()) {
-      return event[primary_key].get<time_t>();
+  const char *keys[] = {primary_key, fallback_key};
+
+  for (const char *key : keys) {
+    try {
+      if (!event.contains(key) || event[key].is_null()) {
+        continue;
+      }
+
+      if (event[key].is_number()) {
+        return event[key].get<time_t>();
+      }
+
+      if (event[key].is_string()) {
+        time_t parsed = 0;
+        if (parse_iso8601_utc(event[key].get<std::string>(), &parsed)) {
+          return parsed;
+        }
+      }
+    } catch (const json::exception &) {
     }
-    if (event.contains(fallback_key) && event[fallback_key].is_number()) {
-      return event[fallback_key].get<time_t>();
-    }
-  } catch (const json::exception &) {
   }
 
   return 0;
@@ -137,6 +256,20 @@ static std::string get_random_message(const json &items) {
 
   const size_t index = static_cast<size_t>(rand()) % items.size();
   return get_item_message(items[index]);
+}
+
+static bool items_contain_message(const json &items, const std::string &message) {
+  if (!items.is_array()) {
+    return false;
+  }
+
+  for (const auto &item : items) {
+    if (get_item_message(item) == message) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 static int text_width(const rgb_matrix::Font &font, const std::string &text,
@@ -239,6 +372,17 @@ static bool parse_event_time_filter(const std::string &value,
   return false;
 }
 
+static bool same_local_date(time_t a, time_t b) {
+  struct tm a_tm;
+  struct tm b_tm;
+  localtime_r(&a, &a_tm);
+  localtime_r(&b, &b_tm);
+
+  return a_tm.tm_year == b_tm.tm_year
+      && a_tm.tm_mon == b_tm.tm_mon
+      && a_tm.tm_mday == b_tm.tm_mday;
+}
+
 static bool event_is_future(const ObjectData &object,
                             const EventTimeFilter &filter) {
   if (object.estimated_time <= 0) {
@@ -246,7 +390,8 @@ static bool event_is_future(const ObjectData &object,
   }
 
   if (filter.mode == EventTimeMode::DATETIME) {
-    return object.estimated_time > filter.datetime;
+    return same_local_date(object.estimated_time, filter.datetime)
+        && object.estimated_time > filter.datetime;
   }
 
   if (filter.mode == EventTimeMode::TIME_ONLY) {
@@ -260,7 +405,9 @@ static bool event_is_future(const ObjectData &object,
     return event_seconds > filter.seconds_since_midnight;
   }
 
-  return object.estimated_time > time(nullptr);
+  const time_t now = time(nullptr);
+  return same_local_date(object.estimated_time, now)
+      && object.estimated_time > now;
 }
 
 static std::string first_event_key(const std::vector<ObjectData> &objects) {
@@ -276,28 +423,60 @@ static std::string first_event_key(const std::vector<ObjectData> &objects) {
 
 static std::vector<ObjectData> build_events(const json &events,
                                                   const EventTimeFilter &filter) {
-  std::vector<ObjectData> objects;
+  std::vector<ObjectData> all_enabled_events;
 
   if (!events.is_array()) {
-    return objects;
+    return all_enabled_events;
   }
 
   for (const auto &event : events) {
-    if (!event.is_object()) {
+    if (!event.is_object() || !item_is_enabled(event)) {
       continue;
     }
 
     ObjectData object;
     object.destination = event.value("destination", "");
     object.description = event.value("description", "");
-
-    // Support both the current *_time names and the *_ts names from the API spec.
     object.scheduled_time = get_time_value(event, "scheduled_time", "scheduled_ts");
     object.estimated_time = get_time_value(event, "estimated_time", "estimated_ts");
 
-    // Only events after the selected filter time are shown. With no -t
-    // override, this means events whose estimated time is after real now.
-    if (event_is_future(object, filter)) {
+    if (object.estimated_time > 0) {
+      all_enabled_events.push_back(object);
+    }
+  }
+
+  if (all_enabled_events.empty()) {
+    return all_enabled_events;
+  }
+
+  // A time-only override is specifically for testing a day's departure board.
+  // Use the date of the earliest enabled API event, then apply the supplied
+  // HH:MM[:SS] on that date. This avoids mixing the following day's events
+  // into the current day's board.
+  time_t comparison_time = time(nullptr);
+
+  if (filter.mode == EventTimeMode::DATETIME) {
+    comparison_time = filter.datetime;
+  } else if (filter.mode == EventTimeMode::TIME_ONLY) {
+    const auto earliest = std::min_element(
+        all_enabled_events.begin(), all_enabled_events.end(),
+        [](const ObjectData &a, const ObjectData &b) {
+          return a.estimated_time < b.estimated_time;
+        });
+
+    struct tm reference_tm;
+    localtime_r(&earliest->estimated_time, &reference_tm);
+    reference_tm.tm_hour = filter.seconds_since_midnight / 3600;
+    reference_tm.tm_min = (filter.seconds_since_midnight % 3600) / 60;
+    reference_tm.tm_sec = filter.seconds_since_midnight % 60;
+    reference_tm.tm_isdst = -1;
+    comparison_time = mktime(&reference_tm);
+  }
+
+  std::vector<ObjectData> objects;
+  for (const ObjectData &object : all_enabled_events) {
+    if (same_local_date(object.estimated_time, comparison_time)
+        && object.estimated_time > comparison_time) {
       objects.push_back(object);
     }
   }
@@ -437,15 +616,12 @@ static std::vector<std::string> build_alt_screens(
 
   std::vector<std::string> alt_screens;
 
-  if (mode == "events_only" || mode == "important_message_only") {
+  if (mode != "all_screens") {
     return alt_screens;
   }
 
-  // Preserve the existing behaviour: an important message takes over the
-  // alternate slot while one is present.
   if (!important_message.empty()) {
     alt_screens.push_back("importantMessage");
-    return alt_screens;
   }
 
   if (jokes.is_array() && !jokes.empty()) {
@@ -643,17 +819,22 @@ int main(int argc, char *argv[]) {
     std::cout << "Loaded cached API configuration" << std::endl;
   }
 
-  json jokes = root.value("jokes", json::array());
-  json affirmations = root.value("affirmations", json::array());
-  json events = root.value("events", json::array());
-  json slideshow = root.value("slideshow", json::array());
-  json gifs = root.value("gifs", json::array());
-  json comments = root.value("comments", json::array());
-  json secrets = root.value("secrets", json::array());
+  json jokes = enabled_items_only(root.value("jokes", json::array()));
+  json affirmations = enabled_items_only(root.value("affirmations", json::array()));
+  json events = enabled_items_only(root.value("events", json::array()));
+  json slideshow = enabled_items_only(root.value("slideshow", json::array()));
+  json gifs = enabled_items_only(root.value("gifs", json::array()));
+  json comments = enabled_items_only(root.value("comments", json::array()));
+  json secrets = enabled_items_only(root.value("secrets", json::array()));
 
-  std::string important_message = get_string_or_empty(root, "importantMessage");
-  std::string mode = get_string_or_empty(root, "mode");
-  bool enable_secret_screen = root.value("enable_secret_screen", false);
+  std::string important_message = get_config_string(root, "importantMessage", "");
+  std::string mode = get_config_string(root, "mode", "all_screens");
+  if (mode != "all_screens"
+      && mode != "events_only"
+      && mode != "important_message_only") {
+    mode = "all_screens";
+  }
+  bool enable_secret_screen = get_config_bool(root, "secretEnabled", false);
 
   std::vector<ObjectData> objects = build_events(events, event_time_filter);
   std::vector<std::string> alt_screens = build_alt_screens(
@@ -769,18 +950,25 @@ int main(int argc, char *argv[]) {
       }
 
       const std::string old_first_event = first_event_key(objects);
+      const std::string old_important_message = important_message;
+      const std::string old_mode = mode;
 
       root = new_root;
-      jokes = root.value("jokes", json::array());
-      affirmations = root.value("affirmations", json::array());
-      events = root.value("events", json::array());
-      slideshow = root.value("slideshow", json::array());
-      gifs = root.value("gifs", json::array());
-      comments = root.value("comments", json::array());
-      secrets = root.value("secrets", json::array());
-      important_message = get_string_or_empty(root, "importantMessage");
-      mode = get_string_or_empty(root, "mode");
-      enable_secret_screen = root.value("enable_secret_screen", false);
+      jokes = enabled_items_only(root.value("jokes", json::array()));
+      affirmations = enabled_items_only(root.value("affirmations", json::array()));
+      events = enabled_items_only(root.value("events", json::array()));
+      slideshow = enabled_items_only(root.value("slideshow", json::array()));
+      gifs = enabled_items_only(root.value("gifs", json::array()));
+      comments = enabled_items_only(root.value("comments", json::array()));
+      secrets = enabled_items_only(root.value("secrets", json::array()));
+      important_message = get_config_string(root, "importantMessage", "");
+      mode = get_config_string(root, "mode", "all_screens");
+      if (mode != "all_screens"
+          && mode != "events_only"
+          && mode != "important_message_only") {
+        mode = "all_screens";
+      }
+      enable_secret_screen = get_config_bool(root, "secretEnabled", false);
 
       objects = build_events(events, event_time_filter);
       main_screen = main_screen_for_mode(mode);
@@ -792,6 +980,53 @@ int main(int argc, char *argv[]) {
           comments,
           secrets,
           enable_secret_screen);
+
+      // If a mode/config update makes the current screen invalid (for example
+      // secretEnabled becomes false while a secret is showing), leave it
+      // immediately rather than waiting for the normal rotation deadline.
+      const bool current_is_main = (current_screen == main_screen);
+      const bool current_is_alt = std::find(
+          alt_screens.begin(), alt_screens.end(), current_screen) != alt_screens.end();
+
+      if (!current_is_main && !current_is_alt) {
+        current_screen = main_screen;
+        last_alt_screen.clear();
+        enter_screen();
+        last_frame_time = std::chrono::steady_clock::now();
+        elapsed_seconds = 0.0;
+      } else if (mode != old_mode) {
+        // A mode change is an explicit operator instruction, so apply it now.
+        current_screen = main_screen;
+        last_alt_screen.clear();
+        enter_screen();
+        last_frame_time = std::chrono::steady_clock::now();
+        elapsed_seconds = 0.0;
+      } else if (current_screen == "importantMessage"
+                 && important_message != old_important_message) {
+        message = important_message;
+        reset_scroll();
+        set_screen_deadline();
+      } else if (current_screen == "jokes"
+                 && !items_contain_message(jokes, message)) {
+        message = get_random_message(jokes);
+        reset_scroll();
+        set_screen_deadline();
+      } else if (current_screen == "affirmations"
+                 && !items_contain_message(affirmations, message)) {
+        message = get_random_message(affirmations);
+        reset_scroll();
+        set_screen_deadline();
+      } else if (current_screen == "comments"
+                 && !items_contain_message(comments, message)) {
+        message = get_random_message(comments);
+        reset_scroll();
+        set_screen_deadline();
+      } else if (current_screen == "secrets"
+                 && !items_contain_message(secrets, message)) {
+        message = get_random_message(secrets);
+        reset_scroll();
+        set_screen_deadline();
+      }
 
       // If the event at the top of the board changed, restart its description
       // from the right so the new text is guaranteed a complete pass.
