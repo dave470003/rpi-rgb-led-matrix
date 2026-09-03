@@ -8,11 +8,14 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <limits.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <curl/curl.h>
 #include <fstream>
@@ -22,6 +25,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <sys/wait.h>
 
 using namespace rgb_matrix;
 using json = nlohmann::json;
@@ -206,6 +210,85 @@ static bool parse_iso8601_utc(const std::string &value, time_t *result) {
 
   *result = parsed;
   return true;
+}
+
+static long double normalize_unix_timestamp(long double value) {
+  const long double absolute = value < 0 ? -value : value;
+
+  // Accept Unix seconds, milliseconds or microseconds. This keeps the API
+  // flexible while normalising everything to seconds for comparison.
+  if (absolute >= 100000000000000.0L) {
+    return value / 1000000.0L;
+  }
+  if (absolute >= 100000000000.0L) {
+    return value / 1000.0L;
+  }
+  return value;
+}
+
+static bool parse_latch_timestamp_value(const json &input, long double *result) {
+  const json *value = &input;
+
+  // Config-style values from /api/all may be wrapped as {"value": ...}.
+  if (value->is_object() && value->contains("value")) {
+    value = &((*value)["value"]);
+  }
+
+  if (value->is_null()) {
+    return false;
+  }
+
+  if (value->is_number()) {
+    *result = normalize_unix_timestamp(value->get<long double>());
+    return true;
+  }
+
+  if (!value->is_string()) {
+    return false;
+  }
+
+  const std::string text = value->get<std::string>();
+  if (text.empty()) {
+    return false;
+  }
+
+  // Numeric timestamps supplied as strings are also accepted.
+  char *numeric_end = nullptr;
+  errno = 0;
+  const long double numeric = strtold(text.c_str(), &numeric_end);
+  if (errno == 0 && numeric_end != text.c_str() && *numeric_end == '\0') {
+    *result = normalize_unix_timestamp(numeric);
+    return true;
+  }
+
+  // Otherwise accept the same Laravel-style UTC ISO timestamp used by the
+  // events API, retaining fractional seconds so two rapid updates still order
+  // correctly.
+  time_t whole_seconds = 0;
+  if (!parse_iso8601_utc(text, &whole_seconds)) {
+    return false;
+  }
+
+  long double timestamp = static_cast<long double>(whole_seconds);
+
+  if (text.size() > 20 && text[19] == '.') {
+    long double place = 0.1L;
+    for (size_t i = 20; i < text.size() && std::isdigit(static_cast<unsigned char>(text[i])); ++i) {
+      timestamp += static_cast<long double>(text[i] - '0') * place;
+      place *= 0.1L;
+    }
+  }
+
+  *result = timestamp;
+  return true;
+}
+
+static bool get_open_latch_timestamp(const json &root, long double *result) {
+  if (!root.is_object() || !root.contains("openLatch")) {
+    return false;
+  }
+
+  return parse_latch_timestamp_value(root["openLatch"], result);
 }
 
 static time_t get_time_value(const json &event, const char *primary_key,
@@ -577,16 +660,76 @@ static bool load_cache(json &data) {
   }
 }
 
-static void api_fetch_loop(int interval_seconds) {
+static bool trigger_latch_script(const std::string &script_path) {
+  pid_t pid = fork();
+
+  if (pid < 0) {
+    std::cerr << "Could not fork latch helper: " << strerror(errno) << std::endl;
+    return false;
+  }
+
+  if (pid == 0) {
+    execl("/usr/bin/python3", "python3", script_path.c_str(),
+          static_cast<char *>(nullptr));
+    _exit(127);
+  }
+
+  int status = 0;
+  pid_t waited;
+  do {
+    waited = waitpid(pid, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+
+  if (waited < 0) {
+    std::cerr << "Could not wait for latch helper: " << strerror(errno) << std::endl;
+    return false;
+  }
+
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    std::cerr << "Latch helper failed" << std::endl;
+    return false;
+  }
+
+  return true;
+}
+
+static void api_fetch_loop(int interval_seconds,
+                           const std::string &latch_script_path,
+                           bool have_last_open_latch,
+                           long double last_open_latch_timestamp) {
   while (api_thread_running.load()) {
     json fetched;
 
     if (fetch_from_api(fetched)) {
-      // Saving happens on the background thread too, so neither the network
-      // nor the disk write can pause the display/render loop.
-      if (!save_cache(fetched)) {
+      long double fetched_open_latch_timestamp = 0.0L;
+      const bool have_fetched_open_latch = get_open_latch_timestamp(
+          fetched, &fetched_open_latch_timestamp);
+
+      const bool should_open_latch = have_last_open_latch
+          && have_fetched_open_latch
+          && fetched_open_latch_timestamp > last_open_latch_timestamp;
+
+      // Save the new API response before actuating the latch. This gives the
+      // trigger at-most-once behaviour across restarts: once a newer timestamp
+      // has been accepted into the cache, the same timestamp cannot fire again.
+      const bool cache_saved = save_cache(fetched);
+      if (!cache_saved) {
         std::cerr << "Warning: fetched API data but could not update cache"
                   << std::endl;
+      } else {
+        if (have_fetched_open_latch
+            && (!have_last_open_latch
+                || fetched_open_latch_timestamp > last_open_latch_timestamp)) {
+          last_open_latch_timestamp = fetched_open_latch_timestamp;
+          have_last_open_latch = true;
+        }
+
+        if (should_open_latch) {
+          std::cout << "openLatch advanced; opening latch" << std::endl;
+          if (!trigger_latch_script(latch_script_path)) {
+            std::cerr << "Latch trigger failed" << std::endl;
+          }
+        }
       }
 
       {
@@ -663,6 +806,25 @@ static bool is_text_screen(const std::string &screen) {
       || screen == "importantMessage";
 }
 
+static std::string executable_directory() {
+  char path[PATH_MAX];
+  ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+
+  if (len <= 0) {
+    return ".";
+  }
+
+  path[len] = '\0';
+  std::string full_path(path);
+  size_t slash = full_path.find_last_of('/');
+
+  if (slash == std::string::npos) {
+    return ".";
+  }
+
+  return full_path.substr(0, slash);
+}
+
 static int usage(const char *progname) {
   fprintf(stderr, "usage: %s [options]\n", progname);
   fprintf(stderr,
@@ -687,6 +849,11 @@ static int usage(const char *progname) {
 int main(int argc, char *argv[]) {
   RGBMatrix::Options matrix_options;
   rgb_matrix::RuntimeOptions runtime_opt;
+
+  // The latch helper needs GPIO access after the matrix has been initialised.
+  // rpi-rgb-led-matrix normally drops root privileges at that point, so keep
+  // the process privileged for this appliance.
+  runtime_opt.drop_privileges = 0;
 
   if (!rgb_matrix::ParseOptionsFromFlags(&argc, &argv,
                                           &matrix_options, &runtime_opt)) {
@@ -819,6 +986,10 @@ int main(int argc, char *argv[]) {
     std::cout << "Loaded cached API configuration" << std::endl;
   }
 
+  long double cached_open_latch_timestamp = 0.0L;
+  const bool have_cached_open_latch = get_open_latch_timestamp(
+      root, &cached_open_latch_timestamp);
+
   json jokes = enabled_items_only(root.value("jokes", json::array()));
   json affirmations = enabled_items_only(root.value("affirmations", json::array()));
   json events = enabled_items_only(root.value("events", json::array()));
@@ -922,7 +1093,13 @@ int main(int argc, char *argv[]) {
   std::thread api_thread;
 
   if (curl_available) {
-    api_thread = std::thread(api_fetch_loop, fetch_interval);
+    const std::string latch_script_path = executable_directory() + "/open_latch.py";
+    api_thread = std::thread(
+        api_fetch_loop,
+        fetch_interval,
+        latch_script_path,
+        have_cached_open_latch,
+        cached_open_latch_timestamp);
   } else {
     std::cerr << "Could not initialise CURL; continuing with cached data"
               << std::endl;
