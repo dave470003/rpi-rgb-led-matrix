@@ -53,6 +53,8 @@ struct EventTimeFilter {
   time_t datetime = 0;
 };
 
+static constexpr time_t EVENT_WINDOW_SECONDS = 6 * 60 * 60;
+
 class ObjectData {
 public:
   std::string destination;
@@ -472,25 +474,23 @@ static bool event_is_future(const ObjectData &object,
     return false;
   }
 
+  // In normal operation, keep only departures in the rolling six-hour window.
+  // There is deliberately no same-day restriction, so a 23:00 comparison time
+  // can include departures after midnight.
+  if (filter.mode == EventTimeMode::REAL_TIME) {
+    const time_t now = time(nullptr);
+    return object.estimated_time > now
+        && object.estimated_time <= now + EVENT_WINDOW_SECONDS;
+  }
+
   if (filter.mode == EventTimeMode::DATETIME) {
-    return same_local_date(object.estimated_time, filter.datetime)
-        && object.estimated_time > filter.datetime;
+    return object.estimated_time > filter.datetime
+        && object.estimated_time <= filter.datetime + EVENT_WINDOW_SECONDS;
   }
 
-  if (filter.mode == EventTimeMode::TIME_ONLY) {
-    struct tm event_tm;
-    localtime_r(&object.estimated_time, &event_tm);
-
-    const int event_seconds = event_tm.tm_hour * 3600
-        + event_tm.tm_min * 60
-        + event_tm.tm_sec;
-
-    return event_seconds > filter.seconds_since_midnight;
-  }
-
-  const time_t now = time(nullptr);
-  return same_local_date(object.estimated_time, now)
-      && object.estimated_time > now;
+  // TIME_ONLY objects are built against a concrete reference date in
+  // build_events(). They are not re-filtered as real time advances.
+  return true;
 }
 
 static std::string first_event_key(const std::vector<ObjectData> &objects) {
@@ -532,10 +532,8 @@ static std::vector<ObjectData> build_events(const json &events,
     return all_enabled_events;
   }
 
-  // A time-only override is specifically for testing a day's departure board.
-  // Use the date of the earliest enabled API event, then apply the supplied
-  // HH:MM[:SS] on that date. This avoids mixing the following day's events
-  // into the current day's board.
+  // A time-only override uses the date of the earliest enabled API event as
+  // its reference date. The six-hour window is allowed to cross midnight.
   time_t comparison_time = time(nullptr);
 
   if (filter.mode == EventTimeMode::DATETIME) {
@@ -556,10 +554,12 @@ static std::vector<ObjectData> build_events(const json &events,
     comparison_time = mktime(&reference_tm);
   }
 
+  const time_t window_end = comparison_time + EVENT_WINDOW_SECONDS;
+
   std::vector<ObjectData> objects;
   for (const ObjectData &object : all_enabled_events) {
-    if (same_local_date(object.estimated_time, comparison_time)
-        && object.estimated_time > comparison_time) {
+    if (object.estimated_time > comparison_time
+        && object.estimated_time <= window_end) {
       objects.push_back(object);
     }
   }
