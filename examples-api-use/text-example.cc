@@ -145,6 +145,7 @@ int main(int argc, char *argv[]) {
   }
 
   canvas->Fill(flood_color.r, flood_color.g, flood_color.b);
+
   char line[1024];
   while (fgets(line, sizeof(line), stdin)) {
     const size_t last = strlen(line);
