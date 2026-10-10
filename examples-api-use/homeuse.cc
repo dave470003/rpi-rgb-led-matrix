@@ -733,8 +733,11 @@ static void draw_header(FrameCanvas *canvas,
       color, nullptr, clock.c_str(), letter_spacing);
 }
 
-static int first_body_baseline(const rgb_matrix::Font &font) {
-  return font.height() + 2 + font.baseline();
+static int first_body_baseline(const rgb_matrix::Font &header_font,
+                               const rgb_matrix::Font &body_font) {
+  // Place the first activity row immediately below the header, allowing the
+  // header and body to use different font sizes.
+  return header_font.height() + 1 + body_font.baseline();
 }
 
 static bool can_draw_baseline(FrameCanvas *canvas,
@@ -786,69 +789,74 @@ static void draw_message_row(FrameCanvas *canvas,
 }
 
 static void draw_departure_screen(FrameCanvas *canvas,
-                                  const rgb_matrix::Font &font,
+                                  const rgb_matrix::Font &header_font,
+                                  const rgb_matrix::Font &body_font,
                                   const Color &color,
                                   const std::string &title,
                                   bool available,
                                   const std::vector<Departure> &departures,
                                   const std::string &empty_message,
                                   int letter_spacing) {
-  draw_header(canvas, font, color, title, letter_spacing);
+  draw_header(canvas, header_font, color, title, letter_spacing);
 
-  int baseline = first_body_baseline(font);
-  const int step = font.height() + 1;
+  int baseline = first_body_baseline(header_font, body_font);
+  const int step = body_font.height() + 1;
 
   if (!available) {
-    if (can_draw_baseline(canvas, font, baseline)) {
+    if (can_draw_baseline(canvas, body_font, baseline)) {
       draw_message_row(
-          canvas, font, color, baseline, "Waiting for data", letter_spacing);
+          canvas, body_font, color, baseline, "Waiting for data", letter_spacing);
     }
     return;
   }
 
   if (departures.empty()) {
-    if (can_draw_baseline(canvas, font, baseline)) {
+    if (can_draw_baseline(canvas, body_font, baseline)) {
       draw_message_row(
-          canvas, font, color, baseline, empty_message, letter_spacing);
+          canvas, body_font, color, baseline, empty_message, letter_spacing);
     }
     return;
   }
 
-  for (const Departure &departure : departures) {
-    if (!can_draw_baseline(canvas, font, baseline)) {
+  // The home board is deliberately a compact two-departure display.
+  const size_t row_count = std::min<size_t>(2, departures.size());
+
+  for (size_t i = 0; i < row_count; ++i) {
+    if (!can_draw_baseline(canvas, body_font, baseline)) {
       break;
     }
 
     draw_departure_row(
-        canvas, font, color, baseline, departure, letter_spacing);
+        canvas, body_font, color, baseline, departures[i], letter_spacing);
 
     baseline += step;
   }
 }
 
 static void draw_lime_screen(FrameCanvas *canvas,
-                             const rgb_matrix::Font &font,
+                             const rgb_matrix::Font &header_font,
+                             const rgb_matrix::Font &body_font,
                              const Color &color,
                              const LimeStatus &lime,
                              int letter_spacing) {
-  draw_header(canvas, font, color, "LIME BIKES", letter_spacing);
+  draw_header(canvas, header_font, color, "LIME BIKES", letter_spacing);
 
-  int baseline = first_body_baseline(font);
-  const int step = font.height() + 1;
+  int baseline = first_body_baseline(header_font, body_font);
+  const int step = body_font.height() + 1;
 
   if (!lime.configured) {
-    if (can_draw_baseline(canvas, font, baseline)) {
+    if (can_draw_baseline(canvas, body_font, baseline)) {
       draw_message_row(
-          canvas, font, color, baseline,
+          canvas, body_font, color, baseline,
           "Set HOME_LAT + HOME_LON", letter_spacing);
     }
     return;
   }
 
   if (!lime.available) {
-    if (can_draw_baseline(canvas, font, baseline)) {
+    if (can_draw_baseline(canvas, body_font, baseline)) {
       draw_message_row(
-          canvas, font, color, baseline,
+          canvas, body_font, color, baseline,
           "Waiting for Lime data", letter_spacing);
     }
     return;
@@ -858,14 +866,14 @@ static void draw_lime_screen(FrameCanvas *canvas,
   nearby << lime.nearby_count << " within "
          << static_cast<int>(LIME_RADIUS_METRES) << "m";
 
-  if (can_draw_baseline(canvas, font, baseline)) {
+  if (can_draw_baseline(canvas, body_font, baseline)) {
     draw_message_row(
-        canvas, font, color, baseline, nearby.str(), letter_spacing);
+        canvas, body_font, color, baseline, nearby.str(), letter_spacing);
   }
 
   baseline += step;
 
-  if (can_draw_baseline(canvas, font, baseline)) {
+  if (can_draw_baseline(canvas, body_font, baseline)) {
     if (lime.nearest_distance_m > 0.0) {
       std::ostringstream nearest;
       nearest << "Nearest "
@@ -873,10 +881,10 @@ static void draw_lime_screen(FrameCanvas *canvas,
               << "m " << lime.nearest_bearing;
 
       draw_message_row(
-          canvas, font, color, baseline, nearest.str(), letter_spacing);
+          canvas, body_font, color, baseline, nearest.str(), letter_spacing);
     } else {
       draw_message_row(
-          canvas, font, color, baseline, "No bikes reported", letter_spacing);
+          canvas, body_font, color, baseline, "No bikes reported", letter_spacing);
     }
   }
 }
@@ -885,15 +893,18 @@ static int usage(const char *progname) {
   fprintf(stderr, "usage: %s [options] [matrix options]\n", progname);
   fprintf(stderr,
           "Options:\n"
-          "\t-f <font-file>       : BDF font used for all text (required)\n"
+          "\t-f <font-file>       : BDF font used for activity/body text (required)\n"
+          "\t-H <font-file>       : BDF font used for headers (defaults to -f)\n"
+          "\t-a <latitude>        : Home latitude (overrides HOME_LAT)\n"
+          "\t-o <longitude>       : Home longitude (overrides HOME_LON)\n"
           "\t-C <r,g,b>           : Text colour (Default: 250,184,0)\n"
           "\t-S <spacing>         : Extra letter spacing (Default: 0)\n"
           "\t-d <seconds>         : Seconds per screen (Default: 10)\n"
           "\t-r <seconds>         : Data refresh interval (Default: 20)\n"
           "\n"
           "Environment:\n"
-          "\tHOME_LAT             : Centre latitude for Lime radius\n"
-          "\tHOME_LON             : Centre longitude for Lime radius\n"
+          "\tHOME_LAT             : Centre latitude for Lime radius (read at runtime)\n"
+          "\tHOME_LON             : Centre longitude for Lime radius (read at runtime)\n"
           "\tTFL_APP_ID           : Optional TfL application id\n"
           "\tTFL_APP_KEY          : Optional TfL application key\n"
           "\n");
@@ -918,7 +929,13 @@ int main(int argc, char *argv[]) {
   setenv("TZ", "Europe/London", 1);
   tzset();
 
-  const char *font_file = nullptr;
+  const char *body_font_file = nullptr;
+  const char *header_font_file = nullptr;
+  bool have_cli_lat = false;
+  bool have_cli_lon = false;
+  double cli_home_lat = 0.0;
+  double cli_home_lon = 0.0;
+
   Color text_color(250, 184, 0);
   Color background_color(0, 0, 0);
 
@@ -927,11 +944,34 @@ int main(int argc, char *argv[]) {
   int refresh_seconds = 20;
 
   int opt;
-  while ((opt = getopt(argc, argv, "f:C:S:d:r:")) != -1) {
+  while ((opt = getopt(argc, argv, "f:H:a:o:C:S:d:r:")) != -1) {
     switch (opt) {
       case 'f':
-        font_file = optarg;
+        body_font_file = optarg;
         break;
+      case 'H':
+        header_font_file = optarg;
+        break;
+      case 'a': {
+        char *end = nullptr;
+        cli_home_lat = strtod(optarg, &end);
+        if (end == optarg || *end != '\0' || !std::isfinite(cli_home_lat)) {
+          fprintf(stderr, "Invalid latitude: %s\n", optarg);
+          return usage(argv[0]);
+        }
+        have_cli_lat = true;
+        break;
+      }
+      case 'o': {
+        char *end = nullptr;
+        cli_home_lon = strtod(optarg, &end);
+        if (end == optarg || *end != '\0' || !std::isfinite(cli_home_lon)) {
+          fprintf(stderr, "Invalid longitude: %s\n", optarg);
+          return usage(argv[0]);
+        }
+        have_cli_lon = true;
+        break;
+      }
       case 'C':
         if (!parse_color(&text_color, optarg)) {
           fprintf(stderr, "Invalid colour: %s\n", optarg);
@@ -960,22 +1000,44 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (!font_file) {
-    fprintf(stderr, "Need to specify a BDF font using -f\n");
+  if (!body_font_file) {
+    fprintf(stderr, "Need to specify a body BDF font using -f\n");
     return usage(argv[0]);
   }
 
-  rgb_matrix::Font font;
-  if (!font.LoadFont(font_file)) {
-    fprintf(stderr, "Couldn't load font '%s'\n", font_file);
+  rgb_matrix::Font body_font;
+  if (!body_font.LoadFont(body_font_file)) {
+    fprintf(stderr, "Couldn't load body font '%s'\n", body_font_file);
+    return 1;
+  }
+
+  rgb_matrix::Font header_font;
+  const char *resolved_header_font_file =
+      header_font_file ? header_font_file : body_font_file;
+
+  if (!header_font.LoadFont(resolved_header_font_file)) {
+    fprintf(stderr, "Couldn't load header font '%s'\n",
+            resolved_header_font_file);
     return 1;
   }
 
   double home_lat = 0.0;
   double home_lon = 0.0;
 
-  const bool have_lat = getenv_double("HOME_LAT", &home_lat);
-  const bool have_lon = getenv_double("HOME_LON", &home_lon);
+  bool have_lat = getenv_double("HOME_LAT", &home_lat);
+  bool have_lon = getenv_double("HOME_LON", &home_lon);
+
+  // Command-line coordinates are useful when the program is launched through
+  // sudo/systemd, because those do not automatically inherit the environment
+  // from the shell where HOME_LAT/HOME_LON were exported.
+  if (have_cli_lat) {
+    home_lat = cli_home_lat;
+    have_lat = true;
+  }
+  if (have_cli_lon) {
+    home_lon = cli_home_lon;
+    have_lon = true;
+  }
   const bool lime_configured =
       have_lat && have_lon
       && home_lat >= -90.0 && home_lat <= 90.0
@@ -983,8 +1045,13 @@ int main(int argc, char *argv[]) {
 
   if (!lime_configured) {
     std::cerr
-        << "HOME_LAT/HOME_LON are not configured; Lime screen will explain "
-        << "that configuration is required." << std::endl;
+        << "HOME_LAT/HOME_LON are not configured in this process. "
+        << "If you launch with sudo use sudo -E, configure Environment= in "
+        << "systemd, or pass -a <lat> -o <lon>." << std::endl;
+  } else {
+    std::cerr << std::fixed << std::setprecision(6)
+              << "Lime centre: " << home_lat << ", " << home_lon
+              << std::endl;
   }
 
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
@@ -1001,6 +1068,16 @@ int main(int argc, char *argv[]) {
   }
 
   FrameCanvas *offscreen = matrix->CreateFrameCanvas();
+
+  const int required_height =
+      header_font.height() + 1 + body_font.height() + 1 + body_font.height();
+  if (required_height > offscreen->height()) {
+    std::cerr
+        << "Warning: header + two body rows require " << required_height
+        << "px but the display is only " << offscreen->height()
+        << "px high. Use a smaller -H and/or -f font to show both rows."
+        << std::endl;
+  }
 
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
@@ -1042,7 +1119,8 @@ int main(int argc, char *argv[]) {
     if (screen_index == 0) {
       draw_departure_screen(
           offscreen,
-          font,
+          header_font,
+          body_font,
           text_color,
           "BRUCE GROVE S/B",
           snapshot.trains_available,
@@ -1052,7 +1130,8 @@ int main(int argc, char *argv[]) {
     } else if (screen_index == 1) {
       draw_departure_screen(
           offscreen,
-          font,
+          header_font,
+          body_font,
           text_color,
           "AWLFIELD AVE",
           snapshot.buses_available,
@@ -1062,7 +1141,8 @@ int main(int argc, char *argv[]) {
     } else {
       draw_lime_screen(
           offscreen,
-          font,
+          header_font,
+          body_font,
           text_color,
           snapshot.lime,
           letter_spacing);
